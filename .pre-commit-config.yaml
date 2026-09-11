@@ -51,8 +51,8 @@ repos:
         args: [--config-file=pyproject.toml, shipstation_integration]
         pass_filenames: false
 
-  - repo: https://github.com/agritheory/test_utils
-    rev: v1.25.1
+  - repo: ../../../test_utils
+    rev: main
     hooks:
       - id: update_pre_commit_config
       - id: validate_frappe_project
@@ -77,12 +77,6 @@ repos:
           - "--config=https://raw.githubusercontent.com/frappe/semgrep-rules/develop/rules/frappe_correctness.yml"
           - "--disable-version-check"
           - "--skip-unknown-extensions"
-
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.19.1
-    hooks:
-      - id: mypy
-        args: ['--ignore-missing-imports']
 
   - repo: local
     hooks:

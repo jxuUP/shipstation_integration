@@ -23,6 +23,9 @@ from shipstation_integration.shipstation_integration.freight_providers.trafficte
 	TrafficTechLTL,
 )
 from shipstation_integration.shipstation_integration.freight_providers.wwex_ltl import WwexLTL
+from shipstation_integration.shipstation_integration.overrides.shipment import (
+	save_selected_ltl_quotes,
+)
 from shipstation_integration.tests.setup import (
 	get_draft_ltl_shipment_for_tests,
 	get_freight_terminal_shipment_for_tests,
@@ -223,21 +226,40 @@ def get_banyan_settings_name():
 # --- ODFL ---
 SOAP_RATE_XML = """\
 <?xml version="1.0" encoding="UTF-8"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-    xmlns:rate="http://www.odfl.com/ws/router/types/v4">
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
   <soapenv:Body>
-    <rate:rateResponse>
-      <rate:referenceNumber>REF-ODFL-001</rate:referenceNumber>
-      <rate:netFreightCharge>480.00</rate:netFreightCharge>
-      <rate:grossFreightCharge>600.00</rate:grossFreightCharge>
-      <rate:fuelSurchargeCharge>72.00</rate:fuelSurchargeCharge>
-      <rate:totalCharge>552.00</rate:totalCharge>
-      <rate:transitDays>2</rate:transitDays>
-    </rate:rateResponse>
+    <ns2:getLTLRateEstimateResponse xmlns:ns2="http://myRate.ws.odfl.com/">
+      <return>
+        <referenceNumber>REF-ODFL-001</referenceNumber>
+        <success>true</success>
+        <rateEstimate>
+          <netFreightCharge>480.00</netFreightCharge>
+          <grossFreightCharge>600.00</grossFreightCharge>
+          <fuelSurcharge>72.00</fuelSurcharge>
+        </rateEstimate>
+        <destinationCities>
+          <name>Los Angeles</name>
+          <serviceDays>2</serviceDays>
+        </destinationCities>
+      </return>
+    </ns2:getLTLRateEstimateResponse>
   </soapenv:Body>
 </soapenv:Envelope>"""
 
 SOAP_RATE_RESPONSE = MockResponse(text=SOAP_RATE_XML)
+
+SOAP_FAULT_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+  <soapenv:Body>
+    <soapenv:Fault>
+      <faultcode>soapenv:Server</faultcode>
+      <faultstring>Invalid account number</faultstring>
+    </soapenv:Fault>
+  </soapenv:Body>
+</soapenv:Envelope>"""
+
+SOAP_FAULT_RESPONSE = MockResponse(text=SOAP_FAULT_XML)
 
 EBOL_RESPONSE = MockResponse(
 	json_data={
@@ -480,9 +502,16 @@ def test_banyan_schedule_pickup_persists_on_submitted_shipment(monkeypatch):
 def run_odfl_story(
 	shipment, settings_name: str, monkeypatch: pytest.MonkeyPatch, *, freight_terminal: bool = False
 ) -> None:
+	frappe.db.set_value("Freight Carrier Settings", settings_name, "account_number", "123456789")
 	inject_odfl_token(settings_name)
 	monkeypatch.setattr("httpx.Client", lambda: MockHttpxClient([SOAP_RATE_RESPONSE]))
-	OdflLTL().get_ltl_quotes(shipment, settings_name=settings_name)
+	offers = OdflLTL().fetch_ltl_offers(shipment, settings_name=settings_name)
+	assert len(offers) == 1
+	assert offers[0]["offer_id"] == "REF-ODFL-001"
+	assert offers[0]["carrier_scac"] == "ODFL"
+	assert offers[0]["total_price"] == 552.0
+	assert len(offers[0]["charges"]) >= 1
+	save_selected_ltl_quotes(shipment.name, offers)
 	saved = frappe.get_all(
 		"Shipment Quotation",
 		filters={"shipment": shipment.name},
@@ -557,6 +586,103 @@ def run_carrier_story(
 		run_traffictech_story(shipment, settings_name, monkeypatch)
 	else:
 		raise AssertionError(f"unknown carrier {carrier}")
+
+
+@pytest.mark.order(58)
+def test_wwex_shop_flow_diagnostic_messages():
+	payload = {
+		"correlationId": "WWEX-ERP-bf2af04b-ff4b-4a84-a6a9-11982ffe8717",
+		"clientStatus": {"success": True, "message": ""},
+		"response": {
+			"message": "No Offers created.",
+			"offerList": [],
+			"requestQuoteWarning": (
+				"Please reach out to your support team and request a spot quote for additional carrier options."
+			),
+			"shopRS": {
+				"ineligible": True,
+				"ineligibleReason": (
+					"There are no carriers available to/from that combination of zip codes. "
+					"Please contact your representative."
+				),
+			},
+		},
+	}
+	messages = WwexLTL().shop_flow_diagnostic_messages(payload)
+	joined = " ".join(messages)
+	assert "WWEX-ERP-bf2af04b" in joined
+	assert "zip codes" in joined
+	assert "No Offers created" in joined
+	assert "spot quote" in joined
+
+
+@pytest.mark.order(59)
+def test_odfl_build_ebol_payload_nmfta_shape():
+	settings_name = get_odfl_settings_name()
+	assert settings_name, "Missing ODFL Freight Carrier Settings"
+
+	frappe.db.set_value("Freight Carrier Settings", settings_name, "account_number", "123456789")
+	shipment = get_draft_ltl_shipment_for_tests()
+	fc = frappe.get_doc("Freight Carrier Settings", settings_name)
+	payload = OdflLTL().build_ebol_payload(shipment, fc, reference_number="REF-ODFL-001")
+
+	assert payload["version"] == "2.1.0"
+	assert payload["bol"]["function"] == "Create"
+	assert payload["bol"]["requestorRole"] == "Shipper"
+	assert payload["payment"]["terms"] == "Prepaid"
+	assert payload["commodities"]["lineItemLayout"] == "Nested"
+	assert "origin" in payload
+	assert "destination" in payload
+	assert "shipper" not in payload
+	assert "consignee" not in payload
+	assert payload["referenceNumbers"]["quoteId"] == "REF-ODFL-001"
+	hu = payload["commodities"]["handlingUnits"][0]
+	assert hu["type"] == "PAT"
+	assert hu["weightUnit"] == "Pounds"
+	assert hu["lineItems"][0]["pieces"] >= 1
+	assert hu["lineItems"][0]["packagingType"] == "PAT"
+
+
+@pytest.mark.order(59)
+def test_odfl_package_weight_to_pounds():
+	assert OdflLTL.package_weight_to_pounds({"value": 400, "unit": "kilograms"}) == 882
+	assert OdflLTL.package_weight_to_pounds({"value": 125, "unit": "pounds"}) == 125
+
+
+@pytest.mark.order(59)
+def test_odfl_fetch_ltl_offers(monkeypatch):
+	settings_name = get_odfl_settings_name()
+	assert settings_name, "Missing ODFL Freight Carrier Settings"
+
+	frappe.db.set_value("Freight Carrier Settings", settings_name, "account_number", "123456789")
+	reset_ltl_shipment_quotation_test_state()
+	shipment = get_draft_ltl_shipment_for_tests()
+	monkeypatch.setattr("httpx.Client", lambda: MockHttpxClient([SOAP_RATE_RESPONSE]))
+
+	offers = OdflLTL().fetch_ltl_offers(shipment, settings_name=settings_name)
+	assert len(offers) == 1
+	offer = offers[0]
+	assert offer["offer_id"] == "REF-ODFL-001"
+	assert offer["transaction_id"] == "REF-ODFL-001"
+	assert offer["carrier_scac"] == "ODFL"
+	assert offer["total_price"] == 552.0
+	assert offer["transit_days"] == 2.0
+	assert any(c["type"] == "Net freight" for c in offer["charges"])
+
+
+@pytest.mark.order(59)
+def test_odfl_fetch_ltl_offers_soap_fault(monkeypatch):
+	settings_name = get_odfl_settings_name()
+	assert settings_name, "Missing ODFL Freight Carrier Settings"
+
+	frappe.db.set_value("Freight Carrier Settings", settings_name, "account_number", "123456789")
+	reset_ltl_shipment_quotation_test_state()
+	shipment = get_draft_ltl_shipment_for_tests()
+	monkeypatch.setattr("httpx.Client", lambda: MockHttpxClient([SOAP_FAULT_RESPONSE]))
+
+	with pytest.raises(frappe.ValidationError) as exc_info:
+		OdflLTL().fetch_ltl_offers(shipment, settings_name=settings_name)
+	assert "Invalid account number" in str(exc_info.value)
 
 
 @pytest.mark.order(60)

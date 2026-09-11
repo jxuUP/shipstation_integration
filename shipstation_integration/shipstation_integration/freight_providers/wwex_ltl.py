@@ -65,7 +65,7 @@ from shipstation_integration.base_ltl import (
 	persist_shipment_ltl_fields,
 	require_submitted_shipment_for_ltl,
 )
-from shipstation_integration.ltl import ShipstationLTL, normalize_freight_class
+from shipstation_integration.ltl import LTL_SUPPORTED_DIMENSION_UOMS, ShipstationLTL
 from shipstation_integration.shipstation_integration.doctype.freight_carrier_settings.freight_carrier_settings import (
 	get_freight_carrier_settings,
 )
@@ -118,6 +118,18 @@ class WwexLTL(BaseLTL):
 
 	def __init__(self):
 		self.provider = "WWEX"
+
+	@staticmethod
+	def log_wwex_error(title: str, message: str, **kwargs) -> None:
+		"""Persist diagnostics outside the request transaction (survives frappe.throw rollback)."""
+		frappe.log_error(title=title, message=message, defer_insert=True, **kwargs)
+
+	@staticmethod
+	def truncate_for_ui(text: str, limit: int = 2000) -> str:
+		text = (text or "").strip()
+		if len(text) <= limit:
+			return text
+		return text[:limit] + "…"
 
 	def get_fcs(self, doc: Shipment | None, settings_name: str | None):
 		if settings_name and frappe.db.exists("Freight Carrier Settings", settings_name):
@@ -210,7 +222,7 @@ class WwexLTL(BaseLTL):
 				body = resp.text
 			detail = body if isinstance(body, str) else frappe.as_json(body, indent=2)
 			label = f" ({context})" if context else ""
-			frappe.log_error(
+			self.log_wwex_error(
 				title=f"WWEX LTL {resp.status_code}{label}",
 				message=detail,
 			)
@@ -227,10 +239,8 @@ class WwexLTL(BaseLTL):
 		req_url = str(getattr(resp.request, "url", "") or "")
 
 		if not trimmed:
-			frappe.log_error(
-				title=_("WWEX LTL empty response"),
-				message=f"context={context}\nstatus_code={resp.status_code}\nurl={req_url}",
-			)
+			detail = f"context={context}\nstatus_code={resp.status_code}\nurl={req_url}"
+			self.log_wwex_error(title="WWEX LTL empty response", message=detail)
 			frappe.throw(
 				_(
 					"The WWEX API returned an empty body for «{0}» (HTTP {1}). Usually this means "
@@ -243,10 +253,8 @@ class WwexLTL(BaseLTL):
 		try:
 			data = json.loads(trimmed)
 		except json.JSONDecodeError:
-			frappe.log_error(
-				title=_("WWEX LTL non-JSON response"),
-				message=(f"context={context}\nstatus_code={resp.status_code}\nurl={req_url}\n\nbody:\n{raw}"),
-			)
+			detail = f"context={context}\nstatus_code={resp.status_code}\nurl={req_url}\n\nbody:\n{raw}"
+			self.log_wwex_error(title="WWEX LTL non-JSON response", message=detail)
 			preview = raw[:600].strip()
 			if len(raw) > 600:
 				preview += "…"
@@ -400,7 +408,7 @@ class WwexLTL(BaseLTL):
 			items = []
 			for _i in range(quantity):
 				item: dict = {
-					"commodityClass": normalize_freight_class(pkg.get("freight_class")),
+					"commodityClass": str(pkg.get("freight_class", "50")),
 					"commodityDescription": pkg.get("description") or "",
 					"isHazMat": bool(doc.get("hazardous_material")),
 					"weight": w_wwex,
@@ -533,12 +541,39 @@ class WwexLTL(BaseLTL):
 
 		return []
 
-	def shop_flow_raise_no_offers(self, payload: dict[str, Any]) -> None:
-		"""Carrier returned HTTP 200 with no rate rows — expose WWEX diagnostics or fail loudly."""
+	def shop_flow_response_root(self, payload: dict[str, Any]) -> dict[str, Any]:
+		"""Return the inner shopFlow ``response`` object from any known envelope shape."""
+		if not isinstance(payload, dict):
+			return {}
+		inner = payload.get("response")
+		if isinstance(inner, dict):
+			nested = inner.get("response")
+			if isinstance(nested, dict):
+				return nested
+			return inner
+		return payload
 
+	def shop_flow_diagnostic_messages(self, payload: dict[str, Any]) -> list[str]:
+		"""Collect human-readable WWEX shopFlow failure reasons from a response envelope."""
 		messages: list[str] = []
 
-		def harvest_status(obj: Any, depth: int = 0) -> None:
+		correlation_id = payload.get("correlationId") if isinstance(payload, dict) else None
+		if correlation_id:
+			messages.append(_("Reference: {0}").format(correlation_id))
+
+		response = self.shop_flow_response_root(payload)
+		if response:
+			shop_rs = response.get("shopRS")
+			if isinstance(shop_rs, dict):
+				ineligible = shop_rs.get("ineligibleReason")
+				if ineligible:
+					messages.append(str(ineligible))
+			for key in ("message", "requestQuoteWarning"):
+				val = response.get(key)
+				if val:
+					messages.append(str(val))
+
+		def harvest_client_status(obj: Any, depth: int = 0) -> None:
 			if depth > 24 or isinstance(obj, (str, int, float, bool)) or obj is None:
 				return
 			if isinstance(obj, dict):
@@ -550,28 +585,35 @@ class WwexLTL(BaseLTL):
 					for k, errs in (cs.get("fieldMap") or {}).items():
 						messages.append(f"{k}: {errs}")
 				for v in obj.values():
-					harvest_status(v, depth + 1)
+					harvest_client_status(v, depth + 1)
 			elif isinstance(obj, list):
 				for item in obj:
-					harvest_status(item, depth + 1)
+					harvest_client_status(item, depth + 1)
 
-		harvest_status(payload)
+		harvest_client_status(payload)
+		return list(dict.fromkeys(m for m in messages if m))
+
+	def shop_flow_raise_no_offers(self, payload: dict[str, Any]) -> None:
+		"""Carrier returned HTTP 200 with no rate rows — expose WWEX diagnostics or fail loudly."""
+
+		messages = self.shop_flow_diagnostic_messages(payload)
 		try:
 			dump = frappe.as_json(payload, indent=2)
 		except Exception:
 			dump = str(payload)
-		frappe.log_error(
+		self.log_wwex_error(
 			title="WWEX shopFlow returned zero offers",
 			message=(dump[:48000] if dump else "(empty)"),
 		)
-		body = "\n".join(dict.fromkeys(m for m in messages if m)).strip()
+		body = "<br>".join(messages).strip()
 		if body:
 			frappe.throw(
-				_("WWEX returned no freight offers. Carrier message:\n{0}").format(body),
+				_("WWEX returned no freight offers.<br><br>{0}").format(body),
 				title=_("No WWEX quotes"),
 			)
+		preview = frappe.utils.escape_html(self.truncate_for_ui(dump))
 		frappe.throw(
-			_("WWEX returned no freight offers. Details are logged under Error Log (WWEX shopFlow)."),
+			_("WWEX returned no freight offers. Response preview:<br><br><pre>{0}</pre>").format(preview),
 			title=_("No WWEX quotes"),
 		)
 
@@ -629,9 +671,18 @@ class WwexLTL(BaseLTL):
 				}
 			)
 		if not results and offers:
+			try:
+				dump = frappe.as_json(offers, indent=2)
+			except Exception:
+				dump = str(offers)
+			self.log_wwex_error(
+				title="WWEX shopFlow offers could not be parsed",
+				message=dump[:48000] if dump else "(empty)",
+			)
+			preview = self.truncate_for_ui(dump)
 			frappe.throw(
-				_(
-					"WWEX returned offer rows but they could not be parsed. See Error Log for the raw response."
+				_("WWEX returned offer rows but they could not be parsed. Response preview:\n\n{0}").format(
+					preview
 				),
 				title=_("No WWEX quotes"),
 			)
@@ -772,7 +823,7 @@ class WwexLTL(BaseLTL):
 					)
 			docs_saved = bool(docs)
 		except Exception:
-			frappe.log_error(
+			self.log_wwex_error(
 				title="WWEX: Error attaching documents",
 				message=frappe.get_traceback(),
 				reference_doctype="Shipment",
@@ -907,8 +958,8 @@ class WwexLTL(BaseLTL):
 
 	def get_shipment_dimension_uoms(self) -> dict:
 		return {
-			"length_uom": ["Inch"],
-			"weight_uom": ["Pound"],
+			"length_uom": list(LTL_SUPPORTED_DIMENSION_UOMS),
+			"weight_uom": ["Pound", "Kilogram"],
 			"density_uom": [],
 		}
 

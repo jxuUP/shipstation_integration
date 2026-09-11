@@ -12,7 +12,7 @@ app_color = "grey"
 app_email = "support@agritheory.dev"
 app_license = "MIT"
 
-required_apps = ["erpnext", "agritheory/beam", "inventory_tools"]
+required_apps = ["frappe/erpnext", "agritheory/beam", "agritheory/inventory_tools"]
 
 # Setup Wizard
 # ------------
@@ -42,6 +42,8 @@ jinja = {
 # include js in doctype views
 
 doctype_js = {
+	"Tracking Number": "public/js/tracking_number.js",
+	"Seventeen Track": "public/js/seventeen_track.js",
 	"Delivery Note": "public/js/delivery_note.js",
 	"Packing Slip": ["public/js/parcel_details.js", "public/js/packing_slip.js"],
 	"Shipment": [
@@ -50,14 +52,15 @@ doctype_js = {
 		"public/js/shipment_pack.js",
 	],
 	"Sales Order": "public/js/sales_order.js",
-	"Supplier": "public/js/supplier.js",
-	"Customer": "public/js/customer.js",
+	"Supplier": ["public/js/shipping_account.js", "public/js/supplier.js"],
+	"Customer": ["public/js/shipping_account.js", "public/js/customer.js"],
 	"Shipment Parcel Template": "public/js/shipment_parcel_template.js",
 }
 
 doctype_list_js = {
 	"Sales Order": "public/js/sales_order_list.js",
 	"Delivery Note": "public/js/delivery_note_list.js",
+	"Tracking Number": "public/js/tracking_number_list.js",
 }
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
@@ -84,7 +87,10 @@ doctype_list_js = {
 
 # Installation
 # ------------
-after_migrate = ["shipstation_integration.install.add_custom_queue"]
+after_migrate = [
+	"shipstation_integration.install.add_custom_queue",
+	"shipstation_integration.install.ensure_17track_integration_role",
+]
 after_install = "shipstation_integration.install.after_install"
 
 # Desk Notifications
@@ -113,17 +119,11 @@ doc_events = {
 	"Delivery Note": {
 		"validate": "shipstation_integration.freight_terms.set_delivery_note_shipping_terms",
 	},
-	"Packing Slip": {
-		"before_submit": "shipstation_integration.packing_slip.before_submit",
-		"on_submit": "shipstation_integration.packing_slip.on_submit",
-	},
 	"Shipment": {
 		"before_validate": (
 			"shipstation_integration.shipstation_integration.overrides.delivery_note.before_validate_shipment"
 		),
 		"validate": "shipstation_integration.freight_terms.set_shipment_shipping_terms",
-		"before_submit": "shipstation_integration.shipment_pack.before_submit",
-		"on_submit": "shipstation_integration.shipment_pack.on_submit",
 	},
 }
 
@@ -132,9 +132,9 @@ doc_events = {
 
 scheduler_events = {
 	"all": [
-		"shipstation_integration.tags.queue_tags",
-		"shipstation_integration.orders.queue_orders",
-		"shipstation_integration.shipments.queue_shipments",
+		"shipstation_integration.api.tags.queue_tags",
+		"shipstation_integration.api.orders.queue_orders",
+		"shipstation_integration.api.shipments.queue_shipments",
 	]
 }
 
@@ -181,3 +181,17 @@ ltl_providers = {
 	"traffictech.com": "shipstation_integration.shipstation_integration.freight_providers.traffictech_ltl.TrafficTechLTL",
 	"odfl.com": "shipstation_integration.shipstation_integration.freight_providers.odfl_ltl.OdflLTL",
 }
+
+# Each path is a callable () -> dict[tuple[str, str], str]. Results are merged in install order; later keys win.
+# Custom apps: append dotted paths to `seventeen_track_status_description_providers`, or use legacy
+# `extend_seventeen_track_status_descriptions` (merged after the providers list).
+seventeen_track_status_description_providers = [
+	"shipstation_integration.shipstation_integration.doctype.seventeen_track.status_description_defaults.base_status_description_map",
+]
+
+# Geocoding hook: called when a tracking event has an address but no coordinates
+# and "Enable Geocoding" is checked on the Seventeen Track settings doc.
+# Default: Nominatim (OpenStreetMap). Suitable for dev and low-volume production.
+seventeen_track_geocode_address = [
+	"shipstation_integration.geocoding.nominatim_geocode",
+]

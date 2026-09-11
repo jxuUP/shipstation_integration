@@ -20,11 +20,11 @@ from frappe.utils import flt
 from frappe.utils.file_manager import save_file
 from shipengine.errors import ShipEngineError
 
-from shipstation_integration.carriers import (
+from shipstation_integration.api.carriers import (
 	get_carrier_capabilities,
 	get_supplier_for_carrier_id,
 )
-from shipstation_integration.rates import (
+from shipstation_integration.api.rates import (
 	DIMENSION_UOM_MAP,
 	WEIGHT_UOM_MAP,
 	get_fallback_package,
@@ -852,6 +852,28 @@ def format_label_response(label_response) -> dict:
 	return label_response
 
 
+
+def get_order_for_packing_slip(ps, dn=None):
+	"""The document that carries the order's customer, terms and references.
+
+	That is the Delivery Note when the Packing Slip has one. Under the alternative
+	sales workflow the Delivery Note is created last, so a label bought off a
+	Packing Slip has only the Sales Order its pack lines came from, and the Sales
+	Order carries the same custom fields (freight term, channel, PO, recipient).
+	"""
+	if dn is not None:
+		return dn
+	if ps.get("delivery_note"):
+		return frappe.get_cached_doc("Delivery Note", ps.get("delivery_note"))
+	from shipstation_integration.shipstation_integration.overrides.sales_order_context import (
+		get_first_sales_order_from_packing_slip,
+	)
+
+	so_name = get_first_sales_order_from_packing_slip(ps)
+	if so_name:
+		return frappe.get_cached_doc("Sales Order", so_name)
+	return None
+
 BILL_TO_PARTY_MAP = {"Receiver": "recipient", "Third Party": "third_party"}
 
 
@@ -881,17 +903,19 @@ def get_third_party_billing_options(ps, dn=None, carrier: str | None = None) -> 
 	Return ShipEngine advanced_options for receiver or third-party billing.
 
 	Billing is driven by the Packing Slip's Bill To selector when set, otherwise
-	by the Delivery Note freight term: only "3rd Party Billing" auto-applies the
+	by the order's freight term: only "3rd Party Billing" auto-applies the
 	customer's matching shipping account. "Shipper" returns None and the label
 	bills our own carrier account.
 
 	The Packing Slip is optional. The warehouse often skips it and buys the label
 	off the Delivery Note or a Shipment, and neither of those paths called this at
 	all, so a shipment sold on the customer's account was still billed to us.
+	``dn`` is the Delivery Note when there is one; under the alternative sales
+	workflow the Packing Slip is packed before any Delivery Note exists, and the
+	Sales Order stands in (see get_order_for_packing_slip).
 	"""
 	ps = ps or frappe._dict()
-	if dn is None and ps.get("delivery_note"):
-		dn = frappe.get_cached_doc("Delivery Note", ps.get("delivery_note"))
+	dn = get_order_for_packing_slip(ps, dn)
 	if not dn or not dn.get("customer"):
 		return None
 
@@ -1036,14 +1060,16 @@ def build_shipment_from_packing_slip(
 
 	validate_po_box_delivery(ship_to_address, service_code, ps.get("carrier"))
 
-	dn = frappe.get_doc("Delivery Note", ps.delivery_note)
+	dn = get_order_for_packing_slip(ps)
+	if not dn:
+		frappe.throw(_("Packing Slip must be linked to a Delivery Note or Sales Order"))
 	company_name = dn.company
 	# Marketplace orders land under a generic customer master ("Shopify",
-	# "TargetPlus"); the recipient is stored on the Delivery Note or in the
+	# "TargetPlus"); the recipient is stored on the order or in the
 	# shipping address title.
 	customer_name = dn.get("up_shopify_customer_name")
 	if not customer_name and dn.get("up_sales_channel") in TARGET_CHANNELS:
-		customer_name = frappe.db.get_value("Address", dn.shipping_address_name, "address_title")
+		customer_name = frappe.db.get_value("Address", ps.shipping_address_name, "address_title")
 	customer_name = customer_name or dn.customer_name or dn.customer
 
 	if carrier_id and not str(carrier_id).startswith("se-"):
@@ -1301,7 +1327,7 @@ def build_shipment_from_shipment_doc(
 	delivery_address_name (ship to).  Package dimensions are sourced from SDN
 	rows assigned to parcel_number.
 	"""
-	from shipstation_integration.rates import get_state_code
+	from shipstation_integration.api.rates import get_state_code
 
 	ship_from_address = frappe.get_doc("Address", doc.pickup_address_name)
 	ship_to_address = frappe.get_doc("Address", doc.delivery_address_name)

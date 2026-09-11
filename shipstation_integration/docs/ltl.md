@@ -4,11 +4,13 @@ For license information, please see license.txt-->
 # Less Than Truckload (LTL)
 
 <div class="byline">
-  Heather Kusmierz and Tyler Matteson 2026-05-04
+  Heather Kusmierz and Tyler Matteson 2026-06-24
 </div>
 
 
 Shipstation Integration app integrates less-than-truckload (LTL) functionality into ERPNext's Shipment document. Rates, booking, tracking, and document retrieval can be performed either through ShipStation's ShipEngine API or directly against a carrier's own API.
+
+For v2 API setup and automatic Freight Carrier Settings sync, see [Shipstation Settings](./shipstation_settings.md).
 
 ## Configuration
 
@@ -18,7 +20,7 @@ Every LTL HTTP call resolves credentials and the base URL from **Freight Carrier
 
 - One **Freight Carrier Settings** row per **Company** + **Supplier** (transporter).
 - **Base URL** — determines which provider class handles the shipment (see Provider Selection below). Defaults to `https://api.shipengine.com` when blank.
-- **Client ID** / **Client Secret** — meaning depends on provider: **Banyan** OAuth client credentials; **ODFL** API username/password; **TrafficTech** TT Interactive portal email and password (embedded in the rate request body); not used for **WWEX** (Connected App) or **ShipEngine** (LTL API Key).
+- **Client ID** / **Client Secret** — meaning depends on provider: **Banyan** OAuth client credentials; **ODFL** odfl4Me portal username and password (same login as myODFL.com — not an API key/secret); **TrafficTech** TT Interactive portal email and password (embedded in the rate request body); not used for **WWEX** (Connected App) or **ShipEngine** (LTL API Key).
 - **LTL API Key** — **ShipEngine** `Api-Key` header. **Banyan** only: optional static Bearer token if the carrier issues one; if this field is set, it is used **instead of** Client ID/Secret OAuth (do not fill both unless you intend to override with the static token). **TrafficTech** `subscription-key` header on every request.
 - **Connected App** — **WWEX** OAuth 2.0 client-credentials (required for WWEX in the current implementation). Optional for **Banyan** if you prefer Centralized OAuth config over FCS Client ID/Secret.
 
@@ -148,13 +150,14 @@ Not all carriers support every action through the API. The interface only shows 
 **Base URL:** `https://api.odfl.com` (production) or `https://apiq.odfl.com` (QA).
 
 **Authentication:** Two mechanisms are used depending on the API:
-- **SOAP Rate API** — credentials sent inline in the SOAP body as `odfl4MeUser` / `odfl4MePassword` (mapped from **Client ID** / **Client Secret** on the FCS record).
-- **REST APIs** (eBOL, pickup, tracking, documents) — a session Bearer token is obtained from `GET /auth/v1.0/token` using HTTP Basic auth with the same **Client ID** / **Client Secret**. Tokens have a 1-hour TTL and are cached per FCS record.
+- **SOAP Rate API** — credentials sent inline in the SOAP body as `odfl4MeUser` / `odfl4MePassword` (mapped from **Client ID** / **Client Secret** on the FCS record). Always calls the **production** SOAP endpoint (`https://www.odfl.com/wsRate_v6/RateService`); there is no QA SOAP host.
+- **REST APIs** (eBOL, pickup, tracking, documents) — a session Bearer token is obtained from `GET {base_url}/auth/v1.0/token` using HTTP Basic auth with the same **Client ID** / **Client Secret**. Tokens have a 1-hour TTL and are cached per FCS record. **Base URL must match your credentials:** production credentials require `https://api.odfl.com`; QA credentials require `https://apiq.odfl.com`. You can receive a SOAP quote on production while REST booking fails if Base URL points at QA or REST APIs are not yet enabled on your account (contact API@odfl.com).
 
 **Freight Carrier Settings fields required:**
 - **Base URL** — ODFL API endpoint
-- **Client ID** — ODFL username (`odfl4MeUser`)
-- **Client Secret** — ODFL password (`odfl4MePassword`)
+- **Client ID** — odfl4Me portal username (myODFL.com login; not an API key)
+- **Client Secret** — odfl4Me portal password (not an API secret)
+- **Account Number** — ODFL bill-to account code (used in SOAP rate and eBOL)
 
 Country codes must be ISO 3166-1 alpha-3 (USA, CAN, MEX). The provider converts two-letter country codes from ERPNext addresses automatically.
 

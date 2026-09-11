@@ -19,12 +19,17 @@ from typing import Any
 import frappe
 from erpnext.stock.doctype.shipment.shipment import Shipment
 from frappe import _
-from datetime import datetime, timedelta
-
-from frappe.utils import get_time
+from inventory_tools.inventory_tools.overrides.pack_stock_reservation import (
+	cancel_stock_reservation_entries_from_pack,
+	maybe_reserve_stock_on_pack_submit,
+)
+from inventory_tools.inventory_tools.overrides.shipment import InventoryToolsShipment
 
 from shipstation_integration.base_ltl import require_submitted_shipment_for_ltl
 from shipstation_integration.ltl import get_ltl_provider
+from shipstation_integration.shipstation_integration.overrides.handling_unit import (
+	on_shipment_submit,
+)
 from shipstation_integration.utils import get_shipstation_settings_optional
 
 
@@ -33,49 +38,70 @@ def ltl_settings_name(settings_name: str | None) -> str | None:
 	return settings.name if settings else None
 
 
-# Carriers dispatch against a window, not an instant. Anything narrower than this is not
-# a window they can send a truck to, so treat it as absent rather than as a request.
-MINIMUM_PICKUP_WINDOW = timedelta(minutes=30)
+class ShipStationShipment(InventoryToolsShipment):
+	def ensure_shipment_parcel_dimension_uoms(self):
+		"""Default parcel UOMs before mandatory validation (ASW defers them until link-back save)."""
+		for parcel in self.get("shipment_parcel") or []:
+			if not parcel.get("length_uom"):
+				parcel.length_uom = "Inch"
+			if not parcel.get("weight_uom"):
+				parcel.weight_uom = "Pound"
 
-
-class ShipStationShipment(Shipment):
 	def validate(self):
-		if self.get("freight_type") == "LTL":
-			if not self.get("delivery_contact_name"):
-				frappe.throw(
-					_("Delivery Contact is required for LTL shipments."),
-					title=_("Delivery contact required"),
-				)
-			self.normalize_pickup_window()
+		self.ensure_shipment_parcel_dimension_uoms()
+		if self.get("freight_type") == "LTL" and not self.get("delivery_contact_name"):
+			frappe.throw(
+				_("Delivery Contact is required for LTL shipments."),
+				title=_("Delivery contact required"),
+			)
 		# TODO: if freight_type == "LTL" -> call ltl_class method to show missing but required fields
 		super().validate()
 
-	def normalize_pickup_window(self) -> None:
-		"""Restore the default pickup window when this one is too narrow to dispatch against.
-
-		A Shipment built from a Delivery Note arrives with pickup_from and pickup_to both
-		stamped with the moment it was created, microseconds apart. Carriers either refuse
-		a window that narrow or quietly substitute one of their own, so the rate that comes
-		back is not for the pickup shown on the form. Direction alone is not the test: the
-		window that prompted this was 25 microseconds wide and still ran forwards.
+	def before_submit(self):
 		"""
-		start, end = self.get("pickup_from"), self.get("pickup_to")
-		if start and end:
-			opens = datetime.combine(datetime.min, get_time(start))
-			closes = datetime.combine(datetime.min, get_time(end))
-			if closes - opens >= MINIMUM_PICKUP_WINDOW:
+		Validate that every Shipment Delivery Note item has been assigned to a
+		parcel before the Shipment is submitted.
+
+		This validation only applies when the SDN table has item-level rows
+		(i.e. any row has dn_detail or item_code populated). Pure DN-link rows
+		without item details are allowed through unpacked.
+		"""
+		if self.uses_alternative_sales_workflow_without_delivery_note():
+			if not any(row.parcel_number for row in (self.shipment_delivery_note or [])):
 				return
-		meta = frappe.get_meta("Shipment")
-		self.pickup_from = meta.get_field("pickup_from").default or "09:00:00"
-		self.pickup_to = meta.get_field("pickup_to").default or "17:00:00"
+
+		item_level_rows = [
+			row
+			for row in (self.shipment_delivery_note or [])
+			if row.get("item_code") or row.get("dn_detail")
+		]
+		if not item_level_rows:
+			return
+
+		unpacked = [row for row in item_level_rows if not row.parcel_number]
+		if unpacked:
+			frappe.throw(
+				_(
+					"All Shipment Delivery Note items must be assigned to a parcel before submitting. "
+					"{0} item(s) are not yet packed."
+				).format(len(unpacked))
+			)
 
 	def on_submit(self):
 		# Shipstation packs on shipment_delivery_note; shipment_parcel is hidden and unused.
-		# Must override here — inheriting Shipment.on_submit would still enforce ERPNext's
-		# shipment_parcel check on sites running stock ERPNext.
+		# Do not call super().on_submit() — ERPNext requires shipment_parcel; Inventory Tools
+		# super() would invoke that check. Compose status, reservation, and HU explicitly.
 		if self.value_of_goods == 0:
 			frappe.throw(_("Value of goods cannot be 0"))
 		self.db_set("status", "Submitted")
+		maybe_reserve_stock_on_pack_submit(self, "Shipment")
+		if self.get("reserve_stock_on_submit"):
+			self.db_set("reserve_stock_on_submit", 0)
+		on_shipment_submit(self)
+
+	def on_cancel(self):
+		cancel_stock_reservation_entries_from_pack("Shipment", self.name, notify=False)
+		super().on_cancel()
 
 
 

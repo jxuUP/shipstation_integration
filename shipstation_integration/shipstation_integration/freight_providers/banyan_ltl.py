@@ -56,7 +56,7 @@ from shipstation_integration.base_ltl import (
 	persist_shipment_ltl_fields,
 	require_submitted_shipment_for_ltl,
 )
-from shipstation_integration.ltl import ShipstationLTL, normalize_freight_class
+from shipstation_integration.ltl import LTL_SUPPORTED_DIMENSION_UOMS, ShipstationLTL
 from shipstation_integration.shipstation_integration.doctype.freight_carrier_settings.freight_carrier_settings import (
 	get_freight_carrier_settings,
 )
@@ -333,7 +333,7 @@ class BanyanLTL(BaseLTL):
 			product = {
 				"PackageType": pkg.get("code") or "Pallets",
 				"Description": pkg.get("description") or "",
-				"Class": normalize_freight_class(pkg.get("freight_class")),
+				"Class": str(int(pkg.get("freight_class") or 50)),
 				"Weight": float(pkg["weight"]["value"]),
 				"WeightUnitOfMeasurement": wt_uom,
 				"Dimensions": {
@@ -1073,7 +1073,7 @@ class BanyanLTL(BaseLTL):
 
 	def get_shipment_dimension_uoms(self) -> dict:
 		return {
-			"length_uom": ["Inch", "Centimeter", "Foot"],
+			"length_uom": list(LTL_SUPPORTED_DIMENSION_UOMS),
 			"weight_uom": ["Pound", "Kilogram"],
 			"density_uom": [],
 		}

@@ -328,7 +328,7 @@ function render_parcel_indicators(frm) {
 function fetch_source_handling_units(frm) {
 	if (!frm._ss_cartonization_enabled || !frm.doc.name || frm.doc.__islocal) return
 	frappe.call({
-		method: 'shipstation_integration.beam_integration.get_source_handling_units',
+		method: 'shipstation_integration.shipstation_integration.overrides.handling_unit.get_source_handling_units',
 		args: { packing_slip: frm.doc.name },
 		callback: function (r) {
 			if (r.message && Object.keys(r.message).length) {
@@ -414,6 +414,97 @@ function update_split_button_state(frm) {
 	$btn.prop('disabled', !can_split)
 }
 
+function apply_shipping_account_defaults(frm, accounts) {
+	if (!accounts?.length) return
+	const account = accounts.find(a => a.default) || accounts.find(a => a.enabled) || accounts[0]
+	if (!account) return
+	if (account.carrier && !frm.doc.carrier) {
+		frm.set_value('carrier', account.carrier)
+	}
+	if (account.carrier_service && !frm.doc.carrier_service) {
+		frm.set_value('carrier_service', account.carrier_service)
+	}
+}
+
+function fetch_shipping_account_defaults(frm, args) {
+	if (frm.doc.carrier && frm.doc.carrier_service) return
+	frappe.call({
+		method: 'shipstation_integration.api.carriers.get_shipping_accounts',
+		args,
+		callback(accounts_r) {
+			apply_shipping_account_defaults(frm, accounts_r.message || [])
+		},
+	})
+}
+
+function fetch_shipping_account_defaults_for_packing_slip(frm) {
+	if (frm.doc.carrier && frm.doc.carrier_service) return
+
+	if (frm.doc.delivery_note) {
+		fetch_shipping_account_defaults(frm, { delivery_note: frm.doc.delivery_note })
+		return
+	}
+
+	const so_name = (frm.doc.items || []).map(row => row.against_sales_order).find(Boolean)
+	if (!so_name) return
+
+	const customer = frm.doc.__onload?.customer
+	if (customer) {
+		fetch_shipping_account_defaults(frm, { customer })
+		return
+	}
+
+	frappe.call({
+		method: 'frappe.client.get',
+		args: { doctype: 'Sales Order', name: so_name },
+		callback(r) {
+			if (!r.message?.customer) return
+			frm.doc.__onload = frm.doc.__onload || {}
+			frm.doc.__onload.customer = r.message.customer
+			fetch_shipping_account_defaults(frm, { customer: r.message.customer })
+		},
+	})
+}
+
+function fetch_sales_order_defaults(frm) {
+	const so_name = (frm.doc.items || []).map(row => row.against_sales_order).find(Boolean)
+	if (!so_name) return
+	if (frm.__sales_order_loaded) return
+	frm.__sales_order_loaded = true
+
+	frappe.call({
+		method: 'frappe.client.get',
+		args: { doctype: 'Sales Order', name: so_name },
+		callback: function (r) {
+			if (!r.message) return
+			const so = r.message
+
+			frm.doc.__onload = frm.doc.__onload || {}
+			frm.doc.__onload.customer = so.customer
+
+			if (!frm.doc.shipping_address_name && so.shipping_address_name) {
+				frm.set_value('shipping_address_name', so.shipping_address_name)
+			}
+
+			if (!frm.doc.dispatch_address_name) {
+				frappe.call({
+					method: 'frappe.contacts.doctype.address.address.get_default_address',
+					args: { doctype: 'Company', name: so.company },
+					callback: function (addr_r) {
+						if (addr_r.message && !frm.doc.dispatch_address_name) {
+							frm.set_value('dispatch_address_name', addr_r.message)
+						}
+					},
+				})
+			}
+
+			if (!frm.doc.carrier || !frm.doc.carrier_service) {
+				fetch_shipping_account_defaults(frm, { customer: so.customer })
+			}
+		},
+	})
+}
+
 function fetch_delivery_note_defaults(frm) {
 	if (!frm.doc.delivery_note) return
 	if (frm.__delivery_note_loaded) return
@@ -441,19 +532,8 @@ function fetch_delivery_note_defaults(frm) {
 
 			fetch_weight_from_delivery_note(frm, dn)
 
-			if (!frm.doc.carrier) {
-				frappe.call({
-					method: 'shipstation_integration.carriers.get_shipping_accounts',
-					args: { delivery_note: frm.doc.delivery_note },
-					callback: function (r) {
-						const accounts = r.message || []
-						if (!accounts.length) return
-						const account = accounts.find(a => a.default) || accounts.find(a => a.enabled) || accounts[0]
-						if (account && account.carrier && !frm.doc.carrier) {
-							frm.set_value('carrier', account.carrier)
-						}
-					},
-				})
+			if (!frm.doc.carrier || !frm.doc.carrier_service) {
+				fetch_shipping_account_defaults(frm, { delivery_note: frm.doc.delivery_note })
 			}
 		},
 	})
@@ -552,8 +632,8 @@ function cartonize_packing_slip_rows(frm) {
 	// targetRows is always only the unpacked rows in scope.
 	// Already-packed rows are silently excluded whether selected or not.
 	const targetRows = selected.length
-		? selected.filter(r => !r.parcel_number)
-		: (frm.doc.items || []).filter(r => !r.parcel_number)
+		? selected.filter(r => !is_row_cartonized(r))
+		: (frm.doc.items || []).filter(r => !is_row_cartonized(r))
 
 	if (!targetRows.length) {
 		frappe.msgprint(
@@ -707,8 +787,22 @@ frappe.ui.form.on('Packing Slip', {
 				}
 
 				if (frm.doc.delivery_note) {
-					if (!frm.doc.shipping_address_name || !frm.doc.dispatch_address_name) {
+					if (
+						!frm.doc.shipping_address_name ||
+						!frm.doc.dispatch_address_name ||
+						!frm.doc.carrier ||
+						!frm.doc.carrier_service
+					) {
 						fetch_delivery_note_defaults(frm)
+					}
+				} else if ((frm.doc.items || []).some(row => row.against_sales_order)) {
+					if (
+						!frm.doc.shipping_address_name ||
+						!frm.doc.dispatch_address_name ||
+						!frm.doc.carrier ||
+						!frm.doc.carrier_service
+					) {
+						fetch_sales_order_defaults(frm)
 					}
 				}
 			},
@@ -716,7 +810,13 @@ frappe.ui.form.on('Packing Slip', {
 	},
 
 	delivery_note: function (frm) {
-		if (!frm.doc.delivery_note) return
+		if (!frm.doc.delivery_note) {
+			frm.__sales_order_loaded = false
+			if ((frm.doc.items || []).some(row => row.against_sales_order)) {
+				fetch_sales_order_defaults(frm)
+			}
+			return
+		}
 		frm.__delivery_note_loaded = false
 		fetch_delivery_note_defaults(frm)
 	},
@@ -878,14 +978,14 @@ function load_carrier_services(frm, supplier_name) {
 
 	// Resolve ERPNext supplier → ShipEngine carrier_id, then fetch live services.
 	frappe.call({
-		method: 'shipstation_integration.carriers.get_carrier_id_for_supplier',
+		method: 'shipstation_integration.api.carriers.get_carrier_id_for_supplier',
 		args: { supplier_name },
 		callback: function (r) {
 			if (!r.message) return
 			const carrier_id = r.message
 
 			frappe.call({
-				method: 'shipstation_integration.carriers.list_carrier_services',
+				method: 'shipstation_integration.api.carriers.list_carrier_services',
 				args: { carrier_id },
 				callback: function (r2) {
 					const services = r2.message || []
@@ -984,7 +1084,7 @@ function setup_shipping_actions(frm) {
 function void_labels(frm) {
 	frappe.confirm(__('Void all purchased labels on this Packing Slip? The carrier will refund the postage.'), () => {
 		frappe.call({
-			method: 'shipstation_integration.labels.void_labels_for_packing_slip',
+			method: 'shipstation_integration.api.labels.void_labels_for_packing_slip',
 			args: { packing_slip: frm.doc.name },
 			freeze: true,
 			freeze_message: __('Voiding labels...'),
@@ -1014,7 +1114,7 @@ function get_shipping_rates(frm) {
 	}
 
 	frappe.call({
-		method: 'shipstation_integration.rates.get_rates_for_packing_slip',
+		method: 'shipstation_integration.api.rates.get_rates_for_packing_slip',
 		args: { packing_slip: frm.doc.name },
 		freeze: true,
 		freeze_message: __('Fetching shipping rates...'),
@@ -1082,7 +1182,7 @@ function build_rates_html(rates) {
 
 function create_label_with_rate(frm, carrier_id, service_code) {
 	frappe.call({
-		method: 'shipstation_integration.labels.create_label_for_packing_slip',
+		method: 'shipstation_integration.api.labels.create_label_for_packing_slip',
 		args: {
 			packing_slip: frm.doc.name,
 			carrier_id,
@@ -1120,7 +1220,7 @@ function create_label_direct(frm) {
 	}
 
 	frappe.call({
-		method: 'shipstation_integration.carriers.get_carrier_id_for_supplier',
+		method: 'shipstation_integration.api.carriers.get_carrier_id_for_supplier',
 		args: { supplier_name: carrier_supplier },
 		callback: function (r) {
 			if (r.message) {
@@ -1166,7 +1266,7 @@ function create_label_pick_service(frm) {
 	const carrier_supplier = frm.doc.carrier || get_carrier_from_items(frm)
 
 	frappe.call({
-		method: 'shipstation_integration.carriers.resolve_carrier_for_label',
+		method: 'shipstation_integration.api.carriers.resolve_carrier_for_label',
 		args: { supplier_name: carrier_supplier },
 		callback: function (r) {
 			const result = r.message || {}
@@ -1212,7 +1312,7 @@ function create_label_pick_service(frm) {
 
 function create_shipping_label(frm) {
 	frappe.call({
-		method: 'shipstation_integration.carriers.list_carriers',
+		method: 'shipstation_integration.api.carriers.list_carriers',
 		callback: function (r) {
 			if (!r.message || r.message.length === 0) {
 				frappe.msgprint(__('No carriers configured. Please set up carriers in Shipstation Settings.'))
@@ -1286,11 +1386,17 @@ function show_carrier_selection_dialog(frm, carriers) {
 }
 
 function load_shipping_accounts(frm, dialog) {
-	if (!frm.doc.delivery_note) return
+	const so_name = (frm.doc.items || []).map(row => row.against_sales_order).find(Boolean)
+	const args = frm.doc.delivery_note
+		? { delivery_note: frm.doc.delivery_note }
+		: so_name
+			? { customer: frm.doc.__onload?.customer }
+			: null
+	if (!args || (!args.delivery_note && !args.customer)) return
 
 	frappe.call({
-		method: 'shipstation_integration.carriers.get_shipping_accounts',
-		args: { delivery_note: frm.doc.delivery_note },
+		method: 'shipstation_integration.api.carriers.get_shipping_accounts',
+		args,
 		callback(r) {
 			const accounts = r.message || []
 			if (!accounts.length) {
@@ -1310,7 +1416,7 @@ function load_shipping_accounts(frm, dialog) {
 
 function load_services_for_dialog(dialog, carrier_id) {
 	frappe.call({
-		method: 'shipstation_integration.carriers.list_carrier_services',
+		method: 'shipstation_integration.api.carriers.list_carrier_services',
 		args: { carrier_id },
 		callback: function (r) {
 			if (r.message && r.message.length > 0) {
@@ -1356,7 +1462,7 @@ function setup_sscc_button(frm) {
 
 function generate_sscc(frm) {
 	frappe.call({
-		method: 'shipstation_integration.sscc.generate_packing_slip_sscc',
+		method: 'shipstation_integration.shipstation_integration.overrides.sscc.generate_packing_slip_sscc',
 		args: { packing_slip: frm.doc.name },
 		freeze: true,
 		freeze_message: __('Generating SSCC codes...'),
