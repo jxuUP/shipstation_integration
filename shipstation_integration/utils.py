@@ -107,7 +107,7 @@ def find_matching_parcel_template(
 
 	for template in templates:
 		# flt() rather than the raw values: a template saved without one of its dimensions
-		# stores NULL, and subtracting that from a float raises rather than not matching.
+		# stores NULL, and subtracting that from a float raises rather than simply not matching.
 		if (
 			abs(flt(template.length) - length_cm) <= tolerance
 			and abs(flt(template.width) - width_cm) <= tolerance
