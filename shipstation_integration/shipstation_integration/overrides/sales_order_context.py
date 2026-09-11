@@ -53,6 +53,24 @@ def get_customer_from_packing_slip(ps) -> tuple[str | None, str | None]:
 	return None, None
 
 
+def get_order_from_packing_slip(ps, dn=None):
+	"""The document that carries the order's customer, terms and references.
+
+	That is the Delivery Note when the Packing Slip has one. Under the alternative
+	sales workflow the Delivery Note is created last, so a label bought off a
+	Packing Slip has only the Sales Order its pack lines came from, and the Sales
+	Order carries the same fields (freight term, channel, PO, recipient).
+	"""
+	if dn is not None:
+		return dn
+	if ps.get("delivery_note"):
+		return frappe.get_cached_doc("Delivery Note", ps.get("delivery_note"))
+	so_name = get_first_sales_order_from_packing_slip(ps)
+	if so_name:
+		return frappe.get_cached_doc("Sales Order", so_name)
+	return None
+
+
 def get_company_dispatch_address(company: str) -> str | None:
 	return get_default_address("Company", company)
 

@@ -358,9 +358,7 @@ def create_label_for_packing_slip(
 	# that first. Falls back to a label per parcel when the account or the service
 	# will not take a multi-package shipment.
 	if len(parcel_numbers) > 1:
-		label_responses = buy_multi_parcel_labels(
-			ps, rate_id, carrier_id, service_code, parcel_numbers
-		)
+		label_responses = buy_multi_parcel_labels(ps, rate_id, carrier_id, service_code, parcel_numbers)
 
 	if not label_responses:
 		for parcel_number in parcel_numbers:
@@ -371,9 +369,7 @@ def create_label_for_packing_slip(
 					frappe.throw(_("Either rate_id or both carrier_id and service_code are required"))
 					return []
 				assert carrier_id is not None and service_code is not None
-				shipment_data = build_shipment_from_packing_slip(
-					ps, carrier_id, service_code, parcel_number
-				)
+				shipment_data = build_shipment_from_packing_slip(ps, carrier_id, service_code, parcel_number)
 				label_response = create_label(shipment_data=shipment_data)
 
 			label_response["parcel_number"] = parcel_number
@@ -427,9 +423,7 @@ def buy_multi_parcel_labels(
 			return []
 		packages.append(package)
 
-	shipment_data = build_shipment_from_packing_slip(
-		ps, carrier_id, service_code, parcel_numbers[0]
-	)
+	shipment_data = build_shipment_from_packing_slip(ps, carrier_id, service_code, parcel_numbers[0])
 	shipment_data["packages"] = packages
 
 	try:
@@ -543,7 +537,8 @@ def write_tracking_to_delivery_note(dn_name: str, label_responses: list[dict]) -
 	tracking_numbers = [r.get("tracking_number") for r in label_responses if r.get("tracking_number")]
 	carrier_code = (label_responses[0].get("carrier_code") or "").upper()
 	total_cost = sum(
-		flt((r.get("shipment_cost") or {}).get("amount")) + flt((r.get("insurance_cost") or {}).get("amount"))
+		flt((r.get("shipment_cost") or {}).get("amount"))
+		+ flt((r.get("insurance_cost") or {}).get("amount"))
 		for r in label_responses
 	)
 
@@ -852,28 +847,6 @@ def format_label_response(label_response) -> dict:
 	return label_response
 
 
-
-def get_order_for_packing_slip(ps, dn=None):
-	"""The document that carries the order's customer, terms and references.
-
-	That is the Delivery Note when the Packing Slip has one. Under the alternative
-	sales workflow the Delivery Note is created last, so a label bought off a
-	Packing Slip has only the Sales Order its pack lines came from, and the Sales
-	Order carries the same custom fields (freight term, channel, PO, recipient).
-	"""
-	if dn is not None:
-		return dn
-	if ps.get("delivery_note"):
-		return frappe.get_cached_doc("Delivery Note", ps.get("delivery_note"))
-	from shipstation_integration.shipstation_integration.overrides.sales_order_context import (
-		get_first_sales_order_from_packing_slip,
-	)
-
-	so_name = get_first_sales_order_from_packing_slip(ps)
-	if so_name:
-		return frappe.get_cached_doc("Sales Order", so_name)
-	return None
-
 BILL_TO_PARTY_MAP = {"Receiver": "recipient", "Third Party": "third_party"}
 
 
@@ -912,10 +885,14 @@ def get_third_party_billing_options(ps, dn=None, carrier: str | None = None) -> 
 	all, so a shipment sold on the customer's account was still billed to us.
 	``dn`` is the Delivery Note when there is one; under the alternative sales
 	workflow the Packing Slip is packed before any Delivery Note exists, and the
-	Sales Order stands in (see get_order_for_packing_slip).
+	Sales Order stands in (see get_order_from_packing_slip).
 	"""
+	from shipstation_integration.shipstation_integration.overrides.sales_order_context import (
+		get_order_from_packing_slip,
+	)
+
 	ps = ps or frappe._dict()
-	dn = get_order_for_packing_slip(ps, dn)
+	dn = get_order_from_packing_slip(ps, dn)
 	if not dn or not dn.get("customer"):
 		return None
 
@@ -927,7 +904,8 @@ def get_third_party_billing_options(ps, dn=None, carrier: str | None = None) -> 
 
 	carrier = carrier or ps.get("carrier")
 	if not carrier:
-		return decline_third_party_billing(dn, bill_to_party, _("no carrier is set on the shipment"))
+		decline_third_party_billing(dn, bill_to_party, _("no carrier is set on the shipment"))
+		return None
 
 	customer = frappe.get_cached_doc("Customer", dn.customer)
 	accounts = [row for row in (customer.shipping_accounts or []) if row.carrier == carrier]
@@ -953,11 +931,12 @@ def get_third_party_billing_options(ps, dn=None, carrier: str | None = None) -> 
 		)
 
 	if not account or not account.shipping_account_number:
-		return decline_third_party_billing(
+		decline_third_party_billing(
 			dn,
 			bill_to_party,
 			_("customer {0} has no {1} account on file").format(dn.customer, carrier),
 		)
+		return None
 
 	postal_code, country_code = get_billing_postal_code(ps, dn, account)
 
@@ -1058,9 +1037,13 @@ def build_shipment_from_packing_slip(
 	ship_to_address = frappe.get_doc("Address", ps.shipping_address_name)
 	ship_from_address = frappe.get_doc("Address", ps.dispatch_address_name)
 
+	from shipstation_integration.shipstation_integration.overrides.sales_order_context import (
+		get_order_from_packing_slip,
+	)
+
 	validate_po_box_delivery(ship_to_address, service_code, ps.get("carrier"))
 
-	dn = get_order_for_packing_slip(ps)
+	dn = get_order_from_packing_slip(ps)
 	if not dn:
 		frappe.throw(_("Packing Slip must be linked to a Delivery Note or Sales Order"))
 	company_name = dn.company
@@ -1238,9 +1221,7 @@ def create_label_for_shipment(
 					frappe.throw(_("Either rate_id or both carrier_id and service_code are required"))
 					return []
 				assert carrier_id is not None and service_code is not None
-				shipment_data = build_shipment_from_shipment_doc(
-					doc, carrier_id, service_code, parcel_number
-				)
+				shipment_data = build_shipment_from_shipment_doc(doc, carrier_id, service_code, parcel_number)
 				label_response = create_label(shipment_data=shipment_data)
 
 			label_response["parcel_number"] = parcel_number

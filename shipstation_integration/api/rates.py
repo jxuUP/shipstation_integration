@@ -316,9 +316,9 @@ def get_rate_by_id(rate_id: str, settings_name: str | None = None) -> dict:
 TARGET_PLUS_CHANNELS = ("EDI-TargetPlus", "Target Plus")
 
 
-def prefer_ups_for_targetplus(rates: list[dict], dn) -> list[dict]:
+def prefer_ups_for_targetplus(rates: list[dict], order) -> list[dict]:
 	"""Target Plus orders ship UPS prepaid; hide other carriers when UPS quotes the lane."""
-	if dn.get("up_sales_channel") not in TARGET_PLUS_CHANNELS:
+	if not order or order.get("up_sales_channel") not in TARGET_PLUS_CHANNELS:
 		return rates
 	ups = [r for r in rates if (r.get("carrier_code") or "").lower().startswith("ups")]
 	return ups or rates
@@ -355,6 +355,7 @@ def get_rates_for_packing_slip(packing_slip: str) -> list[dict]:
 	from shipstation_integration.shipstation_integration.overrides.sales_order_context import (
 		get_company_from_packing_slip,
 		get_customer_from_packing_slip,
+		get_order_from_packing_slip,
 	)
 
 	company_name = get_company_from_packing_slip(ps)
@@ -399,7 +400,7 @@ def get_rates_for_packing_slip(packing_slip: str) -> list[dict]:
 
 	return prefer_ups_for_targetplus(
 		get_rates(ship_from=ship_from, ship_to=ship_to, packages=packages),
-		dn,
+		get_order_from_packing_slip(ps),
 	)
 
 

@@ -2481,4 +2481,3 @@ def get_ltl_provider(doc=None) -> BaseLTL:
 				return frappe.get_attr(dotted_path)()
 
 	return ShipstationLTL()
-

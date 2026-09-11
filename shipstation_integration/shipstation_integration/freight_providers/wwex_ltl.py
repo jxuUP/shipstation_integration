@@ -402,9 +402,7 @@ class WwexLTL(BaseLTL):
 				int(pkg.get("quantity", 1)) or 1,
 				math.ceil(total_lb / self.MAX_HU_WEIGHT_LB),
 			)
-			w_wwex = self.wwex_shipped_item_weight(
-				{"value": total_lb / quantity, "unit": "pounds"}
-			)
+			w_wwex = self.wwex_shipped_item_weight({"value": total_lb / quantity, "unit": "pounds"})
 			items = []
 			for _i in range(quantity):
 				item: dict = {

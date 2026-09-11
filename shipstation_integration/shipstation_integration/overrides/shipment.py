@@ -104,8 +104,6 @@ class ShipStationShipment(InventoryToolsShipment):
 		super().on_cancel()
 
 
-
-
 @frappe.whitelist()
 def get_ltl_carrier_suppliers() -> list[str]:
 	"""Suppliers with an enabled Freight Carrier Settings row - the only carriers that can quote."""
@@ -192,6 +190,7 @@ def make_shipment_from_dn(source_name: str, target_doc=None):
 		target_doc,
 		postprocess,
 	)
+
 
 @frappe.whitelist()
 def get_carrier_id_for_supplier(
