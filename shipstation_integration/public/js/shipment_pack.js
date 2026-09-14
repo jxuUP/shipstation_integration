@@ -474,6 +474,9 @@ function sdn_setup_sscc_button(frm) {
 }
 
 function sdn_generate_sscc(frm) {
+	// The server writes the codes; a clean form can simply reload, a form with edits in
+	// progress takes them live and keeps its edits.
+	const was_dirty = frm.is_dirty()
 	frappe.call({
 		method: 'shipstation_integration.shipstation_integration.overrides.sscc.generate_shipment_sscc',
 		args: { shipment: frm.doc.name },
@@ -483,16 +486,18 @@ function sdn_generate_sscc(frm) {
 			if (!r.message) return
 			const { generated, skipped, codes } = r.message
 
-			if (codes && codes.length) {
+			if (codes && codes.length && was_dirty) {
 				codes.forEach(({ name, ucc128 }) => {
 					frappe.model.set_value('Shipment Delivery Note', name, 'ucc128', ucc128)
 				})
 				frm.refresh_field('shipment_delivery_note')
 				frm.dirty()
+			} else if (codes && codes.length) {
+				frm.reload_doc()
 			}
 
 			if (generated) {
-				frappe.show_alert({ message: __('SSCC assigned to {0} carton(s)', [generated]), indicator: 'green' }, 5)
+				frappe.show_alert({ message: __('SSCC assigned to {0} pallet(s)', [generated]), indicator: 'green' }, 5)
 			}
 			if (skipped) {
 				frappe.show_alert(

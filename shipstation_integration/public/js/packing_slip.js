@@ -1446,6 +1446,9 @@ function setup_sscc_button(frm) {
 }
 
 function generate_sscc(frm) {
+	// The server writes the codes; a clean form can simply reload, a form with edits in
+	// progress takes them live and keeps its edits.
+	const was_dirty = frm.is_dirty()
 	frappe.call({
 		method: 'shipstation_integration.shipstation_integration.overrides.sscc.generate_packing_slip_sscc',
 		args: { packing_slip: frm.doc.name },
@@ -1455,14 +1458,14 @@ function generate_sscc(frm) {
 			if (!r.message) return
 			const { generated, skipped, codes } = r.message
 
-			// Apply codes directly to the live form so unsaved field changes
-			// are not lost.  The server does not save; the user saves normally.
-			if (codes && codes.length) {
+			if (codes && codes.length && was_dirty) {
 				codes.forEach(({ name, ucc128 }) => {
 					frappe.model.set_value('Packing Slip Item', name, 'ucc128', ucc128)
 				})
 				frm.refresh_field('items')
 				frm.dirty()
+			} else if (codes && codes.length) {
+				frm.reload_doc()
 			}
 
 			if (generated) {
