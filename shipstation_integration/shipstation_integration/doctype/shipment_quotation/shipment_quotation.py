@@ -97,14 +97,17 @@ class ShipmentQuotation(Document):
 			return
 
 		if not fc.freight_item:
-			frappe.msgprint(
-				_(
-					"No Freight Item is configured in Freight Carrier Settings for {0}. "
-					"No accounting entry was created. Configure a Freight Item to enable "
-					"automatic expense recognition."
-				).format(shipment.preferred_carrier),
-				alert=True,
-			)
+			# Only someone who can fix the setting is told; the person accepting the offer
+			# cannot, and the offer is accepted either way.
+			if frappe.has_permission("Freight Carrier Settings", "write"):
+				frappe.msgprint(
+					_(
+						"No Freight Item is configured in Freight Carrier Settings for {0}. "
+						"No accounting entry was created. Configure a Freight Item to enable "
+						"automatic expense recognition."
+					).format(shipment.preferred_carrier),
+					alert=True,
+				)
 			return
 
 		if shipment.payment_terms == "Prepaid" and shipment.get("delivery_customer"):
