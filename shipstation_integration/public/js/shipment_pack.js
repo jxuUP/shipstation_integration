@@ -561,52 +561,7 @@ function sdn_get_shipping_rates(frm) {
 }
 
 function sdn_show_rates_dialog(frm, rates) {
-	const rate_options = rates.map(r => ({
-		value: JSON.stringify({ carrier_id: r.carrier_id, service_code: r.service_code }),
-		label: `${r.carrier_name} - ${r.service_type}: $${r.shipping_amount?.amount || r.total_amount}`,
-	}))
-
-	const dialog = new frappe.ui.Dialog({
-		title: __('Available Shipping Rates'),
-		fields: [
-			{
-				fieldtype: 'HTML',
-				fieldname: 'rates_html',
-				options: sdn_build_rates_html(rates),
-			},
-			{
-				fieldtype: 'Select',
-				fieldname: 'selected_rate',
-				label: __('Select Rate'),
-				options: rate_options,
-				reqd: 1,
-			},
-		],
-		primary_action_label: __('Create Label'),
-		primary_action: function () {
-			const selected = JSON.parse(dialog.get_value('selected_rate'))
-			dialog.hide()
-			sdn_create_label_with_rate(frm, selected.carrier_id, selected.service_code)
-		},
-	})
-
-	dialog.show()
-}
-
-function sdn_build_rates_html(rates) {
-	let html = '<table class="table table-bordered table-sm">'
-	html += '<thead><tr><th>Carrier</th><th>Service</th><th>Est. Days</th><th>Cost</th></tr></thead>'
-	html += '<tbody>'
-	rates.forEach(rate => {
-		html += `<tr>
-			<td>${rate.carrier_name || rate.carrier_id}</td>
-			<td>${rate.service_type || rate.service_code}</td>
-			<td>${rate.delivery_days || '-'}</td>
-			<td>$${rate.shipping_amount?.amount || rate.total_amount || '-'}</td>
-		</tr>`
-	})
-	html += '</tbody></table>'
-	return html
+	shipstation.rates.pick(frm, rates, rate => sdn_create_label_with_rate(frm, rate.carrier_id, rate.service_code))
 }
 
 function sdn_create_label(frm) {

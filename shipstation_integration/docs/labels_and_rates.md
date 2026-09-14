@@ -28,7 +28,7 @@ Available from:
 - **Packing Slip** — when v2 is enabled
 - **Shipment** — for small-parcel shipments
 
-The integration builds a shipment payload from the document's ship-from/ship-to addresses and parcel dimensions, then calls the ShipEngine rate API. Results show carrier, service, and price so you can select the best option.
+The integration builds a shipment payload from the document's ship-from/ship-to addresses and parcel dimensions, then calls the ShipEngine rate API. The three forms share one picker: the rates are listed cheapest first with the cheapest already ticked, a click anywhere on a row picks it, and **Create Label** buys the ticked one. Closing the dialog buys nothing.
 
 Parcel dimensions and weights are converted to ShipEngine-compatible units (inch/centimeter, pound/kilogram). See [Parcel Measurement UOM Preference](./parcel_dimension_uom_conversion.md) for how stored metric values are displayed.
 

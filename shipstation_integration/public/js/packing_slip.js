@@ -1052,12 +1052,6 @@ function setup_shipping_actions(frm) {
 				frm.add_custom_button(__('Void Label'), () => void_labels(frm), __('Shipping'))
 			}
 
-			frm.add_custom_button(
-				__('Compare Rates'),
-				() => confirm_then_create_label(frm, () => get_shipping_rates(frm)),
-				__('Shipping')
-			)
-
 			if (frm.doc.docstatus === 0) {
 				frm.add_custom_button(
 					__('Apply Weight to All Containers'),
@@ -1117,52 +1111,7 @@ function get_shipping_rates(frm) {
 }
 
 function show_rates_dialog(frm, rates) {
-	const rate_options = rates.map(r => ({
-		value: JSON.stringify({ carrier_id: r.carrier_id, service_code: r.service_code }),
-		label: `${r.carrier_name} - ${r.service_type}: $${r.shipping_amount?.amount || r.total_amount}`,
-	}))
-
-	const dialog = new frappe.ui.Dialog({
-		title: __('Available Shipping Rates'),
-		fields: [
-			{
-				fieldtype: 'HTML',
-				fieldname: 'rates_html',
-				options: build_rates_html(rates),
-			},
-			{
-				fieldtype: 'Select',
-				fieldname: 'selected_rate',
-				label: __('Select Rate'),
-				options: rate_options,
-				reqd: 1,
-			},
-		],
-		primary_action_label: __('Create Label'),
-		primary_action: function () {
-			const selected = JSON.parse(dialog.get_value('selected_rate'))
-			dialog.hide()
-			create_label_with_rate(frm, selected.carrier_id, selected.service_code)
-		},
-	})
-
-	dialog.show()
-}
-
-function build_rates_html(rates) {
-	let html = '<table class="table table-bordered table-sm">'
-	html += '<thead><tr><th>Carrier</th><th>Service</th><th>Est. Days</th><th>Cost</th></tr></thead>'
-	html += '<tbody>'
-	rates.forEach(rate => {
-		html += `<tr>
-			<td>${rate.carrier_name || rate.carrier_id}</td>
-			<td>${rate.service_type || rate.service_code}</td>
-			<td>${rate.delivery_days || '-'}</td>
-			<td>$${rate.shipping_amount?.amount || rate.total_amount || '-'}</td>
-		</tr>`
-	})
-	html += '</tbody></table>'
-	return html
+	shipstation.rates.pick(frm, rates, rate => create_label_with_rate(frm, rate.carrier_id, rate.service_code))
 }
 
 function create_label_with_rate(frm, carrier_id, service_code) {

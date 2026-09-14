@@ -45,11 +45,20 @@ jinja = {
 doctype_js = {
 	"Tracking Number": "public/js/tracking_number.js",
 	"Seventeen Track": "public/js/seventeen_track.js",
-	"Delivery Note": ["public/js/delivery_note.js", "public/js/address_check.js"],
+	"Delivery Note": [
+		"public/js/rate_picker.js",
+		"public/js/delivery_note.js",
+		"public/js/address_check.js",
+	],
 	"Address": "public/js/address_check.js",
-	"Packing Slip": ["public/js/parcel_details.js", "public/js/packing_slip.js"],
+	"Packing Slip": [
+		"public/js/parcel_details.js",
+		"public/js/rate_picker.js",
+		"public/js/packing_slip.js",
+	],
 	"Shipment": [
 		"public/js/parcel_details.js",
+		"public/js/rate_picker.js",
 		"public/js/shipment_custom.js",
 		"public/js/shipment_pack.js",
 	],
