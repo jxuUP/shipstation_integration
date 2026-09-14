@@ -701,18 +701,6 @@ function split_selected_rows(frm) {
 }
 
 frappe.ui.form.on('Packing Slip', {
-	freight_type: function (frm) {
-		if (['LTL', 'Full Truckload'].includes(frm.doc.freight_type)) {
-			frappe.msgprint(
-				__(
-					'{0} shipments are quoted and booked on a Shipment document, not the Packing Slip. Submit the Delivery Note, then use Create > Shipment on it to get freight quotes.',
-					[frm.doc.freight_type]
-				),
-				__('Freight Shipment')
-			)
-		}
-	},
-
 	setup: function (frm) {
 		frm._ss_cartonization_enabled = false
 
