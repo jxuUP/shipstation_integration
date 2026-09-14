@@ -1025,6 +1025,42 @@ def validate_po_box_delivery(ship_to_address, service_code, carrier=None):
 	)
 
 
+# Military mail (APO/FPO/DPO) moves through the USPS Military Postal Service.
+# UPS and FedEx accept the label and then hand the parcel to USPS or return it.
+MILITARY_CITIES = ("APO", "FPO", "DPO")
+MILITARY_STATES = ("AA", "AE", "AP")
+
+
+def is_military_address(address) -> bool:
+	"""True for a US APO/FPO/DPO address (Armed Forces Americas/Europe/Pacific)."""
+	country = address.get("country")
+	if country:
+		country_code = (frappe.db.get_value("Country", country, "code") or "US").upper()
+		if country_code != "US":
+			return False
+	city = (address.get("city") or "").strip().upper()
+	state = get_state_code(address.get("state") or "", "US")
+	return city in MILITARY_CITIES or state in MILITARY_STATES
+
+
+def validate_military_delivery(ship_to_address, service_code, carrier=None):
+	"""Same rule as the PO box guard: only the postal services reach a base."""
+	if not is_military_address(ship_to_address):
+		return
+
+	selected = f"{service_code or ''} {carrier or ''}".lower()
+	if any(postal in selected for postal in PO_BOX_CARRIERS):
+		return
+
+	frappe.throw(
+		_(
+			"{0} is a military address (APO/FPO/DPO) and {1} does not deliver to military "
+			"bases. Ship this parcel by USPS."
+		).format(ship_to_address.address_line1, carrier or service_code or _("this carrier")),
+		title=_("Military Address Not Deliverable"),
+	)
+
+
 def build_shipment_from_packing_slip(
 	ps, carrier_id: str, service_code: str, parcel_number: int
 ) -> dict:
@@ -1042,6 +1078,7 @@ def build_shipment_from_packing_slip(
 	)
 
 	validate_po_box_delivery(ship_to_address, service_code, ps.get("carrier"))
+	validate_military_delivery(ship_to_address, service_code, ps.get("carrier"))
 
 	dn = get_order_from_packing_slip(ps)
 	if not dn:

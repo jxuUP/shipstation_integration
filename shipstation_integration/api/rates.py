@@ -171,6 +171,10 @@ def get_state_code(state: str, country_code: str = "US") -> str:
 		"American Samoa": "AS",
 		"U.S. Virgin Islands": "VI",
 		"Northern Mariana Islands": "MP",
+		# Military mail: USPS routes APO/FPO/DPO through these three pseudo-states
+		"Armed Forces Americas": "AA",
+		"Armed Forces Europe": "AE",
+		"Armed Forces Pacific": "AP",
 	}
 
 	# Case-insensitive lookup
