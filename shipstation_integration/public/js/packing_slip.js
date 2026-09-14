@@ -1110,11 +1110,8 @@ function get_shipping_rates(frm) {
 			if (r.message && r.message.length) {
 				show_rates_dialog(frm, r.message)
 			} else {
-				frappe.msgprint(__('No rates returned. Please check carrier configuration.'))
+				frappe.msgprint(__('No carrier returned a rate for this shipment.'))
 			}
-		},
-		error: function (err) {
-			frappe.msgprint(__('Error fetching rates: {0}', [err.message || 'Unknown error']))
 		},
 	})
 }
@@ -1469,7 +1466,7 @@ function generate_sscc(frm) {
 			}
 
 			if (generated) {
-				frappe.show_alert({ message: __('Generated {0} SSCC code(s)', [generated]), indicator: 'green' }, 5)
+				frappe.show_alert({ message: __('SSCC assigned to {0} carton(s)', [generated]), indicator: 'green' }, 5)
 			}
 			if (skipped) {
 				frappe.show_alert(

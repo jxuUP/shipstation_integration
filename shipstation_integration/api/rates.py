@@ -9,6 +9,7 @@ multiple carriers before purchasing labels.
 """
 
 import json
+import re
 from typing import TYPE_CHECKING, Optional
 
 import frappe
@@ -225,13 +226,6 @@ def get_rates(
 
 	try:
 		rates_response = client.get_rates_from_shipment(rate_request)
-		result = dedupe_rates(filter_allowed_services(format_rates_response(rates_response), settings))
-		if not result:
-			# Log the full response for debugging if no rates found
-			frappe.logger("shipstation").info(
-				f"No rates found. Request: {rate_request}, Response: {rates_response}"
-			)
-		return result
 	except Exception as e:
 		error_msg = get_error_message(e)
 		frappe.log_error(
@@ -240,6 +234,39 @@ def get_rates(
 		)
 		frappe.throw(_("Failed to fetch shipping rates: {0}").format(error_msg))
 		return []
+
+	result = dedupe_rates(filter_allowed_services(format_rates_response(rates_response), settings))
+	if not result:
+		frappe.logger("shipstation").info(
+			f"No rates found. Request: {rate_request}, Response: {rates_response}"
+		)
+		explain_empty_rates(rates_response)
+	return result
+
+
+def explain_empty_rates(rates_response) -> None:
+	"""Say why the carriers quoted nothing, in their words.
+
+	A rate response with ``status: partial`` and no rates carries one error per
+	carrier service, and they usually all say the same thing (a bad postal code, a
+	weight the service will not take). The user can act on that; "check carrier
+	configuration" sends them to the wrong screen.
+	"""
+	rate_response = (
+		rates_response.get("rate_response", rates_response) if isinstance(rates_response, dict) else {}
+	)
+	if not isinstance(rate_response, dict):
+		return
+	reasons = []
+	for error in rate_response.get("errors") or []:
+		message = (error.get("message") or "").replace("A shipping carrier error occurred:", "").strip()
+		if message and message not in reasons:
+			reasons.append(message)
+	if reasons:
+		frappe.throw(
+			_("No carrier returned a rate for this shipment.<br><br>{0}").format("<br>".join(reasons[:3])),
+			title=_("No rates"),
+		)
 
 
 @frappe.whitelist()
@@ -706,6 +733,7 @@ def filter_allowed_services(rates: list[dict], settings: "ShipstationSettings") 
 
 def format_address(address: dict) -> dict:
 	"""Format address for ShipStation API v2."""
+	country_code = address.get("country", address.get("country_code", "US")).upper()[:2]
 	return {
 		"name": address.get("name", ""),
 		"phone": address.get("phone", "0000000000"),
@@ -713,9 +741,19 @@ def format_address(address: dict) -> dict:
 		"address_line2": address.get("street2", address.get("address_line2", "")),
 		"city_locality": address.get("city", address.get("city_locality", "")),
 		"state_province": address.get("state", address.get("state_province", "")),
-		"postal_code": address.get("postal_code", address.get("pincode", "")),
-		"country_code": address.get("country", address.get("country_code", "US")).upper()[:2],
+		"postal_code": format_postal_code(
+			address.get("postal_code", address.get("pincode", "")), country_code
+		),
+		"country_code": country_code,
 	}
+
+
+def format_postal_code(postal_code: str | None, country_code: str) -> str:
+	"""A US ZIP+4 needs its hyphen: every carrier rejects the nine digits EDI sends them as."""
+	postal_code = (postal_code or "").strip()
+	if country_code == "US" and re.fullmatch(r"\d{9}", postal_code):
+		return f"{postal_code[:5]}-{postal_code[5:]}"
+	return postal_code
 
 
 def format_package(package: dict) -> dict:
