@@ -1021,6 +1021,10 @@ class BanyanLTL(BaseLTL):
 				headers=self.headers(fc),
 				timeout=30,
 			)
+		# A load somebody already cancelled on Banyan's side is cancelled; say so rather
+		# than fail the take-back here.
+		if resp.status_code == 400 and "already cancelled" in (resp.text or "").lower():
+			return "already cancelled"
 		self.raise_for_status(resp, "cancel_shipment POST /cancel")
 		try:
 			data = resp.json()
