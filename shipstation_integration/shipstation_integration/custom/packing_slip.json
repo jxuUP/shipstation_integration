@@ -104,6 +104,85 @@
       "options": "Stock Entry",
       "print_hide": 1,
       "read_only": 1
+    },
+    {
+      "collapsible": 1,
+      "dt": "Packing Slip",
+      "fieldname": "sb_label_references",
+      "fieldtype": "Section Break",
+      "insert_after": "default_parcel_template",
+      "label": "Label References and Billing",
+      "module": "Shipstation Integration",
+      "name": "Packing Slip-sb_label_references"
+    },
+    {
+      "description": "Defaults to the sales channel",
+      "dt": "Packing Slip",
+      "fieldname": "label_reference_1",
+      "fieldtype": "Data",
+      "insert_after": "sb_label_references",
+      "label": "Label Reference 1",
+      "module": "Shipstation Integration",
+      "name": "Packing Slip-label_reference_1"
+    },
+    {
+      "description": "Defaults to the sales order number",
+      "dt": "Packing Slip",
+      "fieldname": "label_reference_2",
+      "fieldtype": "Data",
+      "insert_after": "label_reference_1",
+      "label": "Label Reference 2",
+      "module": "Shipstation Integration",
+      "name": "Packing Slip-label_reference_2"
+    },
+    {
+      "description": "Defaults to the customer PO number",
+      "dt": "Packing Slip",
+      "fieldname": "label_reference_3",
+      "fieldtype": "Data",
+      "insert_after": "label_reference_2",
+      "label": "Label Reference 3",
+      "module": "Shipstation Integration",
+      "name": "Packing Slip-label_reference_3"
+    },
+    {
+      "dt": "Packing Slip",
+      "fieldname": "cb_label_references",
+      "fieldtype": "Column Break",
+      "insert_after": "label_reference_3",
+      "module": "Shipstation Integration",
+      "name": "Packing Slip-cb_label_references"
+    },
+    {
+      "description": "Blank follows the Delivery Note freight term",
+      "dt": "Packing Slip",
+      "fieldname": "bill_to_party",
+      "fieldtype": "Select",
+      "insert_after": "cb_label_references",
+      "label": "Bill To",
+      "module": "Shipstation Integration",
+      "name": "Packing Slip-bill_to_party",
+      "options": "\nShipper\nReceiver\nThird Party"
+    },
+    {
+      "depends_on": "eval:['Receiver','Third Party'].includes(doc.bill_to_party)",
+      "dt": "Packing Slip",
+      "fieldname": "bill_to_account",
+      "fieldtype": "Data",
+      "insert_after": "bill_to_party",
+      "label": "Bill-To Account #",
+      "module": "Shipstation Integration",
+      "name": "Packing Slip-bill_to_account"
+    },
+    {
+      "depends_on": "eval:['Receiver','Third Party'].includes(doc.bill_to_party)",
+      "dt": "Packing Slip",
+      "fieldname": "bill_to_postal_code",
+      "fieldtype": "Data",
+      "insert_after": "bill_to_account",
+      "label": "Bill-To Account Zip",
+      "module": "Shipstation Integration",
+      "name": "Packing Slip-bill_to_postal_code"
     }
   ],
   "doctype": "Packing Slip",

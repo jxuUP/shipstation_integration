@@ -483,15 +483,31 @@ def get_package_from_packing_slip(packing_slip, parcel_number: int | None = None
 		dimension_unit = DIMENSION_UOM_MAP.get(parcel_item.dimension_uom, "inch")
 		weight_unit = WEIGHT_UOM_MAP.get(parcel_item.parcel_weight_uom, "pound")
 
+		# A carton with no size used to go to the carrier as a one inch cube, which
+		# prices and labels a box that does not exist. Say what is missing instead.
+		length, width, height = (
+			flt(parcel_item.parcel_length),
+			flt(parcel_item.parcel_width),
+			flt(parcel_item.parcel_height),
+		)
+		if not (length and width and height):
+			frappe.throw(
+				_(
+					"Carton {0} has no size. Pick a Shipping Container Template on the slip, or type "
+					"its Length, Width and Height on the row, so the carrier prices the box that ships."
+				).format(parcel_item.parcel_number),
+				title=_("Carton Size Missing"),
+			)
+
 		return {
 			"weight": {
 				"value": flt(parcel_item.parcel_weight) or 1.0,
 				"unit": weight_unit,
 			},
 			"dimensions": {
-				"length": flt(parcel_item.parcel_length) or 1,
-				"width": flt(parcel_item.parcel_width) or 1,
-				"height": flt(parcel_item.parcel_height) or 1,
+				"length": length,
+				"width": width,
+				"height": height,
 				"unit": dimension_unit,
 			},
 		}

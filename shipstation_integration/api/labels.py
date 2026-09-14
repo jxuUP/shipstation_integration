@@ -60,6 +60,14 @@ def create_label(
 	settings = get_shipstation_settings(settings_name)
 	client = settings.shipstation_api_client()
 
+	# ShipEngine prints the reference block from each package, not from the shipment:
+	# a shipment-level label_messages is accepted and ignored, which is why the labels
+	# bought so far went out with the references blank.
+	messages = shipment_data.pop("label_messages", None)
+	if messages:
+		for package in shipment_data.get("packages") or []:
+			package.setdefault("label_messages", messages)
+
 	# ShipEngine SDK expects data wrapped in a "shipment" key
 	wrapped_data = {"shipment": shipment_data}
 
@@ -673,6 +681,36 @@ def create_label_for_delivery_note(
 	return label_response
 
 
+def recipient_phone(address, order=None, fallback: str = "") -> str:
+	"""The phone the carrier prints for the recipient.
+
+	Every carrier wants one and the driver dials it. Retailer DC addresses arrive by
+	EDI with no phone, so look past the Address: the contact on the order, then the
+	customer's contacts (the receiving dock is filed there). The shipper's own number
+	is the last resort; "0000000000" only tells the driver nobody can be reached.
+	"""
+	if address.get("phone"):
+		return address.phone
+	if order:
+		for field in ("contact_mobile", "contact_phone"):
+			if order.get(field):
+				return order.get(field)
+		if order.get("customer"):
+			phone = frappe.db.sql(
+				"""select coalesce(nullif(c.phone, ''), nullif(c.mobile_no, ''))
+				from `tabContact` c
+				join `tabDynamic Link` dl on dl.parent = c.name and dl.parenttype = 'Contact'
+				where dl.link_doctype = 'Customer' and dl.link_name = %s
+					and (ifnull(c.phone, '') != '' or ifnull(c.mobile_no, '') != '')
+				order by c.is_primary_contact desc, c.creation
+				limit 1""",
+				order.get("customer"),
+			)
+			if phone and phone[0][0]:
+				return phone[0][0]
+	return fallback or "0000000000"
+
+
 def build_shipment_from_delivery_note(dn, carrier_id: str, service_code: str) -> dict:
 	"""Build shipment payload from Delivery Note."""
 	ship_to_address = frappe.get_doc("Address", dn.shipping_address_name)
@@ -685,8 +723,8 @@ def build_shipment_from_delivery_note(dn, carrier_id: str, service_code: str) ->
 		frappe.db.get_value("Country", ship_from_address.country, "code") or "US"
 	).upper()
 
-	ship_to_phone = ship_to_address.phone or "0000000000"
 	ship_from_phone = ship_from_address.phone or "0000000000"
+	ship_to_phone = recipient_phone(ship_to_address, dn, ship_from_phone)
 
 	package = get_fallback_package(dn)
 
@@ -1119,8 +1157,8 @@ def build_shipment_from_packing_slip(
 		frappe.db.get_value("Country", ship_from_address.country, "code") or "US"
 	).upper()
 
-	ship_to_phone = ship_to_address.phone or "0000000000"
 	ship_from_phone = ship_from_address.phone or "0000000000"
+	ship_to_phone = recipient_phone(ship_to_address, dn, ship_from_phone)
 
 	shipment: dict = {
 		"carrier_id": carrier_id,
@@ -1407,6 +1445,7 @@ def build_shipment_from_shipment_doc(
 	# asked, so freight sold on the customer's account was billed to us.
 	label_messages = {}
 	third_party = None
+	dn = None
 	dn_name = next(
 		(row.delivery_note for row in (doc.shipment_delivery_note or []) if row.delivery_note), None
 	)
@@ -1417,12 +1456,26 @@ def build_shipment_from_shipment_doc(
 			frappe._dict(), dn, get_supplier_for_carrier_id(carrier_id)
 		)
 
+	# The Shipment keeps its receiving contact as a Contact link, not on the note.
+	contact_phone = None
+	if doc.get("delivery_contact_name"):
+		phone, mobile = frappe.db.get_value(
+			"Contact", doc.delivery_contact_name, ["phone", "mobile_no"]
+		) or (None, None)
+		contact_phone = phone or mobile
+	ship_from_phone = ship_from_address.phone or "0000000000"
+	ship_to_phone = recipient_phone(
+		ship_to_address,
+		dn or frappe._dict(contact_phone=contact_phone, customer=doc.get("delivery_customer")),
+		ship_from_phone,
+	)
+
 	payload = {
 		"carrier_id": carrier_id,
 		"service_code": service_code,
 		"ship_to": {
 			"name": recipient_name,
-			"phone": ship_to_address.phone or "0000000000",
+			"phone": ship_to_phone,
 			"address_line1": ship_to_address.address_line1,
 			"address_line2": ship_to_address.address_line2 or "",
 			"city_locality": ship_to_address.city,
@@ -1432,7 +1485,7 @@ def build_shipment_from_shipment_doc(
 		},
 		"ship_from": {
 			"name": doc.company,
-			"phone": ship_from_address.phone or "0000000000",
+			"phone": ship_from_phone,
 			"address_line1": ship_from_address.address_line1,
 			"address_line2": ship_from_address.address_line2 or "",
 			"city_locality": ship_from_address.city,

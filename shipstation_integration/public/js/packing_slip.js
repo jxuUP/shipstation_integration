@@ -546,6 +546,27 @@ function next_available_parcel(items) {
 	return n
 }
 
+// Every action that reads the slip on the server saves it first, so the packer never
+// has to remember Ctrl+S between Pack, Compare Rates, the SSCC and the label.
+function saved(frm) {
+	if (frm.is_new()) {
+		frappe.msgprint(__('Save the Packing Slip first.'))
+		return Promise.resolve(false)
+	}
+	if (!frm.is_dirty()) return Promise.resolve(true)
+	return frm.save().then(() => true)
+}
+
+// The pack buttons change rows in the form; a saved slip is written back straight away
+// and says so, an unsaved one is left for the first Save.
+function packed(frm, message) {
+	render_parcel_indicators(frm)
+	deselect_all_rows(frm)
+	frm.dirty()
+	if (frm.is_new()) return
+	frm.save().then(() => frappe.show_alert({ message, indicator: 'green' }, 4))
+}
+
 function pack_selected_rows(frm) {
 	const selected = frm.fields_dict.items.grid.get_selected_children()
 	if (!selected.length) {
@@ -557,11 +578,7 @@ function pack_selected_rows(frm) {
 
 	const promises = selected.map(row => frappe.model.set_value(row.doctype, row.name, 'parcel_number', next))
 
-	Promise.all(promises).then(() => {
-		render_parcel_indicators(frm)
-		deselect_all_rows(frm)
-		frm.dirty()
-	})
+	Promise.all(promises).then(() => packed(frm, __('{0} line(s) packed into carton {1}', [selected.length, next])))
 
 	return false
 }
@@ -586,11 +603,7 @@ function pack_each_row(frm) {
 		frappe.model.set_value(row.doctype, row.name, 'parcel_number', parcel_number)
 	)
 
-	Promise.all(promises).then(() => {
-		render_parcel_indicators(frm)
-		deselect_all_rows(frm)
-		frm.dirty()
-	})
+	Promise.all(promises).then(() => packed(frm, __('{0} line(s) packed, one carton each', [assignments.length])))
 
 	return false
 }
@@ -604,11 +617,7 @@ function unpack_selected_rows(frm) {
 
 	const promises = selected.map(row => frappe.model.set_value(row.doctype, row.name, 'parcel_number', 0))
 
-	Promise.all(promises).then(() => {
-		render_parcel_indicators(frm)
-		deselect_all_rows(frm)
-		frm.dirty()
-	})
+	Promise.all(promises).then(() => packed(frm, __('{0} line(s) unpacked', [selected.length])))
 
 	return false
 }
@@ -1040,11 +1049,23 @@ function setup_shipping_actions(frm) {
 				const has_service = frm.doc.carrier_service
 
 				if (has_carrier && has_service) {
-					frm.add_custom_button(__('Create Label'), () => create_label_direct(frm), __('Shipping'))
+					frm.add_custom_button(
+						__('Create Label'),
+						() => saved(frm).then(ok => ok && create_label_direct(frm)),
+						__('Shipping')
+					)
 				} else if (has_carrier) {
-					frm.add_custom_button(__('Create Label'), () => create_label_pick_service(frm), __('Shipping'))
+					frm.add_custom_button(
+						__('Create Label'),
+						() => saved(frm).then(ok => ok && create_label_pick_service(frm)),
+						__('Shipping')
+					)
 				} else {
-					frm.add_custom_button(__('Create Label'), () => create_shipping_label(frm), __('Shipping'))
+					frm.add_custom_button(
+						__('Create Label'),
+						() => saved(frm).then(ok => ok && create_shipping_label(frm)),
+						__('Shipping')
+					)
 				}
 
 				frm.add_custom_button(__('Compare Rates'), () => get_shipping_rates(frm), __('Shipping'))
@@ -1095,19 +1116,23 @@ function get_shipping_rates(frm) {
 		return
 	}
 
-	frappe.call({
-		method: 'shipstation_integration.api.rates.get_rates_for_packing_slip',
-		args: { packing_slip: frm.doc.name },
-		freeze: true,
-		freeze_message: __('Fetching shipping rates...'),
-		callback: function (r) {
-			if (r.message && r.message.length) {
-				show_rates_dialog(frm, r.message)
-			} else {
-				frappe.msgprint(__('No carrier returned a rate for this shipment.'))
-			}
-		},
-	})
+	saved(frm).then(
+		ok =>
+			ok &&
+			frappe.call({
+				method: 'shipstation_integration.api.rates.get_rates_for_packing_slip',
+				args: { packing_slip: frm.doc.name },
+				freeze: true,
+				freeze_message: __('Fetching shipping rates...'),
+				callback: function (r) {
+					if (r.message && r.message.length) {
+						show_rates_dialog(frm, r.message)
+					} else {
+						frappe.msgprint(__('No carrier returned a rate for this shipment.'))
+					}
+				},
+			})
+	)
 }
 
 function show_rates_dialog(frm, rates) {
@@ -1395,6 +1420,10 @@ function setup_sscc_button(frm) {
 }
 
 function generate_sscc(frm) {
+	saved(frm).then(ok => ok && generate_sscc_saved(frm))
+}
+
+function generate_sscc_saved(frm) {
 	// The server writes the codes; a clean form can simply reload, a form with edits in
 	// progress takes them live and keeps its edits.
 	const was_dirty = frm.is_dirty()
