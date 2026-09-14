@@ -12,7 +12,8 @@ frappe.provide('shipstation.rates')
 shipstation.rates.pick = function (frm, rates, on_pick) {
 	const esc = frappe.utils.escape_html
 	const cost = r => flt(r.shipping_amount?.amount ?? r.shipping_amount ?? r.total_amount)
-	const currency = rates[0]?.shipping_amount?.currency || 'USD'
+	// ShipEngine spells the currency in lower case, which the formatter does not know.
+	const currency = (rates[0]?.shipping_amount?.currency || 'USD').toUpperCase()
 	const sorted = rates.slice().sort((a, b) => cost(a) - cost(b))
 	const days = d => (d ? __('{0} day(s)', [cint(d)]) : '')
 	const rows = sorted
