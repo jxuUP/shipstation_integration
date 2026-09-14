@@ -401,6 +401,10 @@ function show_ltl_quote_selection_dialog(frm, quotes) {
 				callback(r) {
 					d.hide()
 					if (r && r.message) frappe.msgprint(r.message)
+					// The offers are saved on their own doctype, so the form has nothing new to load,
+					// but its buttons and banners read the saved quotations and want a refresh.
+					if (frm.is_dirty()) frm.refresh()
+					else frm.reload_doc()
 				},
 			})
 		},
