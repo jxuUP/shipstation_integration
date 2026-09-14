@@ -75,6 +75,24 @@ def get_company_dispatch_address(company: str) -> str | None:
 	return get_default_address("Company", company)
 
 
+def get_warehouse_address(warehouse: str | None) -> str | None:
+	"""The address on the warehouse the order picks from, or on the nearest parent that has
+	one. The carton ships from there, and the rates and the label need that origin rather
+	than the company's billing address."""
+	for _level in range(8):
+		if not warehouse:
+			return None
+		address = frappe.db.get_value(
+			"Dynamic Link",
+			{"link_doctype": "Warehouse", "link_name": warehouse, "parenttype": "Address"},
+			"parent",
+		)
+		if address:
+			return address
+		warehouse = frappe.db.get_value("Warehouse", warehouse, "parent_warehouse")
+	return None
+
+
 def apply_packing_slip_addresses_from_sales_order(ps, sales_order_name: str | None = None) -> None:
 	so_name = sales_order_name or get_first_sales_order_from_packing_slip(ps)
 	if not so_name:
@@ -85,7 +103,11 @@ def apply_packing_slip_addresses_from_sales_order(ps, sales_order_name: str | No
 		ps.shipping_address_name = so.shipping_address_name
 
 	if not ps.get("dispatch_address_name"):
-		dispatch = so.get("dispatch_address_name") or get_company_dispatch_address(so.company)
+		dispatch = (
+			so.get("dispatch_address_name")
+			or get_warehouse_address(so.get("set_warehouse"))
+			or get_company_dispatch_address(so.company)
+		)
 		if dispatch:
 			ps.dispatch_address_name = dispatch
 
