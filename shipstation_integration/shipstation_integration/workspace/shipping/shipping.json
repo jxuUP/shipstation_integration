@@ -1,6 +1,6 @@
 {
  "charts": [],
- "content": "[{\"id\":\"NHg60YhYMD\",\"type\":\"header\",\"data\":{\"text\":\"<b>Shipping</b>\",\"col\":12}},{\"id\":\"LnqvEa_WOk\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Packing Slip\",\"col\":3}},{\"id\":\"GbBrk9rBQj\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Shipment\",\"col\":3}},{\"id\":\"7IV9o3eOHK\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Delivery Note\",\"col\":3}},{\"id\":\"c7hBGmcqQv\",\"type\":\"card\",\"data\":{\"card_name\":\"Tracking\",\"col\":4}},{\"id\":\"DKvdCCHA1R\",\"type\":\"card\",\"data\":{\"card_name\":\"Reports\",\"col\":4}},{\"id\":\"bqOwiQhcK6\",\"type\":\"card\",\"data\":{\"card_name\":\"Settings\",\"col\":4}}]",
+ "content": "[{\"id\":\"NHg60YhYMD\",\"type\":\"header\",\"data\":{\"text\":\"<b>Shipping</b>\",\"col\":12}},{\"id\":\"LnqvEa_WOk\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Packing Slip\",\"col\":3}},{\"id\":\"GbBrk9rBQj\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Shipment\",\"col\":3}},{\"id\":\"7IV9o3eOHK\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Delivery Note\",\"col\":3}},{\"id\":\"sQxT2vLmQ1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Shipment Quotation\",\"col\":3}},{\"id\":\"c7hBGmcqQv\",\"type\":\"card\",\"data\":{\"card_name\":\"Tracking\",\"col\":4}},{\"id\":\"DKvdCCHA1R\",\"type\":\"card\",\"data\":{\"card_name\":\"Reports\",\"col\":4}},{\"id\":\"bqOwiQhcK6\",\"type\":\"card\",\"data\":{\"card_name\":\"Settings\",\"col\":4}}]",
  "creation": "2026-07-16 01:38:09.174876",
  "custom_blocks": [],
  "docstatus": 0,
@@ -36,7 +36,7 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "Settings",
-   "link_count": 4,
+   "link_count": 5,
    "link_type": "DocType",
    "onboard": 0,
    "type": "Card Break"
@@ -77,6 +77,17 @@
    "label": "Shipment Parcel Template",
    "link_count": 0,
    "link_to": "Shipment Parcel Template",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "dependencies": "",
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Shipping Account",
+   "link_count": 0,
+   "link_to": "Shipping Account",
    "link_type": "DocType",
    "onboard": 0,
    "type": "Link"
@@ -138,6 +149,12 @@
    "doc_view": "",
    "label": "Delivery Note",
    "link_to": "Delivery Note",
+   "type": "DocType"
+  },
+  {
+   "doc_view": "",
+   "label": "Shipment Quotation",
+   "link_to": "Shipment Quotation",
    "type": "DocType"
   }
  ],
