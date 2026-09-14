@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Optional
 import frappe
 from frappe import _
 
+from shipstation_integration.api.rates import format_postal_code
 from shipstation_integration.utils import get_shipstation_settings
 
 if TYPE_CHECKING:
@@ -63,16 +64,17 @@ def create_fulfillment(
 
 	# Add ship-to info if available
 	if ship_to_address:
+		ship_to_country = (
+			frappe.db.get_value("Country", ship_to_address.country, "code") or "US"
+		).upper()
 		fulfillment_data["ship_to"] = {
 			"name": dn.customer_name or dn.customer,
 			"address_line1": ship_to_address.address_line1,
 			"address_line2": ship_to_address.address_line2 or "",
 			"city_locality": ship_to_address.city,
 			"state_province": ship_to_address.state,
-			"postal_code": ship_to_address.pincode,
-			"country_code": (
-				frappe.db.get_value("Country", ship_to_address.country, "code") or "US"
-			).upper(),
+			"postal_code": format_postal_code(ship_to_address.pincode, ship_to_country),
+			"country_code": ship_to_country,
 		}
 
 	# Add items if present
