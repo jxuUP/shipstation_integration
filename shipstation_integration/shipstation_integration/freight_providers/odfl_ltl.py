@@ -573,9 +573,10 @@ class OdflLTL(BaseLTL):
 		return 500
 
 	def apply_manual_parcel_weights(self, doc, packages: list[dict]) -> list[dict]:
-		"""Prefer the manually keyed Parcel Weight when it exceeds the inventory-derived
-		weight; item masters here are often missing weights, which otherwise rates a
-		full pallet at ~1 lb / class 500."""
+		"""Prefer the manually keyed Parcel Weight when it exceeds the package weight.
+
+		``build_packages_from_sdn`` already weighs a parcel as typed, so this only still
+		matters for a parcel whose lines disagree on the typed weight (the heaviest wins)."""
 		by_parcel: dict[int, float] = {}
 		for row in doc.shipment_delivery_note or []:
 			if not row.parcel_number or not flt(row.parcel_weight):

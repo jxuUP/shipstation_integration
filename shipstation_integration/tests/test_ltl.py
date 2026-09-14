@@ -227,6 +227,31 @@ def test_get_ltl_provider_resolves_by_fcs_type(case, expected_cls):
 
 
 @pytest.mark.order(53)
+def test_build_packages_weighs_the_parcel_as_typed():
+	"""The typed pallet weight is what the label and the bill of lading print, so the quote
+	uses it too, even when the item master would add up to something else."""
+	shipment = get_draft_ltl_shipment_for_tests()
+	original = configure_ltl_shipment_for_parcel_tests(shipment)
+	items_before: dict[str, float] = {}
+	try:
+		for row in shipment.shipment_delivery_note:
+			if row.item_code not in items_before:
+				items_before[row.item_code] = flt(
+					frappe.db.get_value("Item", row.item_code, "weight_per_unit")
+				)
+			frappe.db.set_value("Item", row.item_code, "weight_per_unit", 40)
+
+		packages = ShipstationLTL().build_packages_from_sdn(shipment)
+		assert len(packages) == 1
+		assert packages[0]["weight"]["value"] == 125
+		assert packages[0]["weight"]["unit"] == "pounds"
+	finally:
+		for item_code, wp in items_before.items():
+			frappe.db.set_value("Item", item_code, "weight_per_unit", wp)
+		restore_ltl_shipment(shipment, original)
+
+
+@pytest.mark.order(53)
 def test_build_packages_uses_parcel_weight_once_per_parcel():
 	"""parcel_weight is copied to every SDN line during packing; quote weight must not multiply it."""
 	shipment = get_draft_ltl_shipment_for_tests()
