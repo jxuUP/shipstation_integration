@@ -25,6 +25,9 @@ function get_packing_units(frm) {
 }
 
 function template_dimensions(template, units) {
+	// The template sets the carton's size and the unit a typed weight will be in. Its own
+	// weight is the empty box, not what ships: the carton's weight comes from the goods
+	// packed into it (or the scale), so it is left alone here.
 	const metric = units.dimension_uom === 'Centimeter'
 	const to_length = value => (metric ? flt(value) : flt(flt(value) / 2.54, 2))
 	return {
@@ -32,7 +35,6 @@ function template_dimensions(template, units) {
 		parcel_width: to_length(template.width),
 		parcel_height: to_length(template.height),
 		dimension_uom: units.dimension_uom,
-		parcel_weight: metric ? flt(template.weight) : flt(flt(template.weight) * 2.20462, 2),
 		parcel_weight_uom: units.weight_uom,
 	}
 }
