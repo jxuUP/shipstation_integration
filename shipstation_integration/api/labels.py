@@ -552,6 +552,10 @@ def write_tracking_to_delivery_note(dn_name: str, label_responses: list[dict]) -
 		values["up_freight_cost"] = str(round(total_cost, 2))
 	if values:
 		frappe.db.set_value("Delivery Note", dn_name, values)
+		# The order shows the tracking of everything shipped against it, where the site
+		# keeps such a field (upro_erp does, through this hook).
+		for fn in frappe.get_hooks("delivery_note_tracking_updated"):
+			frappe.get_attr(fn)(dn_name)
 
 	if total_cost:
 		add_freight_charge_to_delivery_note(dn_name, round(total_cost, 2))

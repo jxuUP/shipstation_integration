@@ -18,6 +18,7 @@ frappe.ui.form.on('Shipment', {
 		get_carrier_service_levels(frm)
 		show_quote_and_spot_quote_fields(frm)
 		add_schedule_pickup_button(frm)
+		add_ltl_offer_actions(frm)
 	},
 
 	setup: frm => {
@@ -376,6 +377,7 @@ function show_ltl_quote_selection_dialog(frm, quotes) {
 		.join('')
 
 	const html = `
+		${ltl_rates_through(frm)}
 		<div style="margin-bottom:8px">
 			<label><input type="checkbox" id="ltl-select-all"> <strong>${__('Select all')}</strong></label>
 		</div>
@@ -393,7 +395,7 @@ function show_ltl_quote_selection_dialog(frm, quotes) {
 		</table>`
 
 	const d = new frappe.ui.Dialog({
-		title: __(`${quotes.length} LTL Quote(s) Received — Select to Save`),
+		title: __('{0} LTL offer(s): pick the ones to save', [quotes.length]),
 		size: 'extra-large',
 		fields: [{ fieldtype: 'HTML', options: html }],
 		primary_action_label: __('Save Selected'),
@@ -429,6 +431,169 @@ function show_ltl_quote_selection_dialog(frm, quotes) {
 
 	d.$body.find('#ltl-select-all').on('change', function () {
 		d.$body.find('.ltl-quote-check').prop('checked', this.checked)
+	})
+}
+
+// A broker such as Banyan answers with a dozen carriers' rates; say whose rates these
+// are so the carrier column is read for what it is.
+function ltl_rates_through(frm) {
+	if (!frm.doc.preferred_carrier) return ''
+	return `<p class="text-muted small" style="margin-bottom:6px">${__('Rates through {0}', [
+		frappe.utils.escape_html(frm.doc.preferred_carrier),
+	])}</p>`
+}
+
+// Accepting an offer used to mean opening the Shipment Quotation, submitting it, coming
+// back and pressing Schedule LTL Pickup. The dock does it from here: pick the offer, book
+// it, and the booking (carrier, PRO, pickup number, cost) sits on the form until it is
+// cancelled. Accept Only holds the offer and its cost without calling the carrier.
+function add_ltl_offer_actions(frm) {
+	;['Accept Offer', 'Cancel Booking', 'Cancel Offer'].forEach(label => frm.remove_custom_button(__(label)))
+	if (frm.doc.freight_type !== 'LTL' || frm.doc.docstatus !== 1) return
+
+	const booked = !!(frm.doc.pickup_id || frm.doc.awb_number || frm.doc.shipment_id)
+	if (frm.doc.quote_or_offer_id || frm.doc.accepted_quotation || booked) {
+		show_ltl_booking(frm, booked)
+		frm.add_custom_button(booked ? __('Cancel Booking') : __('Cancel Offer'), () => cancel_ltl_booking(frm, booked))
+		return
+	}
+	frappe.db
+		.get_list('Shipment Quotation', {
+			filters: { shipment: frm.doc.name, docstatus: 0 },
+			fields: [
+				'name',
+				'carrier',
+				'carrier_scac',
+				'service_level',
+				'estimated_delivery_days',
+				'grand_total',
+				'is_spot_quote',
+			],
+			order_by: 'grand_total asc',
+			limit: 50,
+		})
+		.then(offers => {
+			if (!offers.length || frm.doc.quote_or_offer_id) return
+			frm.add_custom_button(__('Accept Offer'), () => accept_ltl_offer_dialog(frm, offers))
+		})
+}
+
+function accept_ltl_offer_dialog(frm, offers) {
+	const esc = frappe.utils.escape_html
+	const money = value => format_currency(value, 'USD')
+	const days = d => (d !== null && d !== undefined && d !== '' ? __('{0} day(s)', [cint(d)]) : '')
+	const rows = offers
+		.map(
+			(q, i) => `
+		<tr>
+			<td class="text-center"><input type="radio" name="ltl-offer" class="ltl-offer-pick" value="${i}" ${i === 0 ? 'checked' : ''}></td>
+			<td>${esc(q.carrier || '')}${q.carrier_scac ? ` <small class="text-muted">(${esc(q.carrier_scac)})</small>` : ''}</td>
+			<td>${esc(q.service_level || '')}${q.is_spot_quote ? ` <small class="text-muted">${__('spot')}</small>` : ''}</td>
+			<td class="text-center">${days(q.estimated_delivery_days)}</td>
+			<td class="text-right"><strong>${money(q.grand_total)}</strong></td>
+		</tr>`
+		)
+		.join('')
+	const html = `
+		${ltl_rates_through(frm)}
+		<table class="table table-bordered table-condensed" style="margin-bottom:0">
+			<thead>
+				<tr>
+					<th style="width:36px"></th>
+					<th>${__('Carrier')}</th>
+					<th>${__('Service')}</th>
+					<th class="text-center">${__('Transit')}</th>
+					<th class="text-right">${__('Total')}</th>
+				</tr>
+			</thead>
+			<tbody>${rows}</tbody>
+		</table>
+		<p class="text-muted small" style="margin-top:8px">${__(
+			'Booking tells the carrier to come and brings back the PRO number. Accepting without booking holds the offer and its cost on the Shipment.'
+		)}</p>`
+
+	const accept = book => {
+		const offer = offers[cint(d.$body.find('.ltl-offer-pick:checked').val())]
+		if (!offer) return
+		d.hide()
+		frappe.call({
+			method: 'shipstation_integration.shipstation_integration.overrides.shipment.accept_ltl_quotation',
+			args: { shipment: frm.doc.name, quotation: offer.name, book: book },
+			freeze: true,
+			freeze_message: book ? __('Booking with {0}', [offer.carrier]) : __('Accepting the {0} offer', [offer.carrier]),
+			callback: r => {
+				const res = r.message || {}
+				let message = __('{0} accepted at {1}.', [res.carrier, money(res.amount)])
+				if (res.booked) {
+					message = __('Booked with {0}.', [res.carrier])
+					if (res.awb_number) message += ' ' + __('PRO {0}.', [res.awb_number])
+				}
+				frappe.show_alert({ message: message, indicator: 'green' }, 8)
+				frm.reload_doc()
+			},
+		})
+	}
+	const d = new frappe.ui.Dialog({
+		title: __('Accept an offer for {0}', [frm.doc.name]),
+		size: 'large',
+		fields: [{ fieldtype: 'HTML', options: html }],
+		primary_action_label: __('Accept and Book Pickup'),
+		primary_action: () => accept(1),
+		secondary_action_label: __('Accept Only'),
+		secondary_action: () => accept(0),
+	})
+	d.show()
+}
+
+function show_ltl_booking(frm, booked) {
+	const esc = frappe.utils.escape_html
+	const cells = []
+	const add = (label, value) => {
+		if (value)
+			cells.push(
+				`<div class="col-sm-3" style="margin-bottom:6px"><div class="text-muted small">${label}</div><div>${value}</div></div>`
+			)
+	}
+	add(__('Carrier'), esc(frm.doc.carrier || frm.doc.preferred_carrier || ''))
+	add(__('Service'), esc(frm.doc.carrier_service || ''))
+	add(__('PRO'), esc(frm.doc.awb_number || ''))
+	add(__('Pickup number'), esc(frm.doc.pickup_id || ''))
+	add(__('Load'), esc(frm.doc.shipment_id || ''))
+	add(__('Freight cost'), flt(frm.doc.shipment_amount) ? format_currency(frm.doc.shipment_amount, 'USD') : '')
+	add(
+		__('Offer'),
+		frm.doc.accepted_quotation
+			? `<a href="/app/shipment-quotation/${encodeURIComponent(frm.doc.accepted_quotation)}">${esc(frm.doc.accepted_quotation)}</a>`
+			: ''
+	)
+	const title = booked ? __('Freight booked') : __('Offer accepted, pickup not booked')
+	frm.dashboard.add_section(`<div class="row">${cells.join('')}</div>`, title)
+}
+
+function cancel_ltl_booking(frm, booked) {
+	const carrier = frm.doc.carrier || frm.doc.preferred_carrier || __('the carrier')
+	const question = booked
+		? __('Cancel the pickup with {0}? The PRO is given up and the Shipment can be quoted again.', [carrier])
+		: __('Take back the accepted offer? Its cost comes off the Shipment and it can be quoted again.')
+	frappe.confirm(question, () => {
+		frappe.call({
+			method: 'shipstation_integration.shipstation_integration.overrides.shipment.cancel_ltl_booking',
+			args: { shipment: frm.doc.name },
+			freeze: true,
+			callback: r => {
+				const res = r.message || {}
+				frappe.show_alert(
+					{
+						message: res.carrier_told
+							? __('Cancelled with {0} ({1}).', [carrier, res.confirmation])
+							: __('Offer taken back.'),
+						indicator: 'orange',
+					},
+					8
+				)
+				frm.reload_doc()
+			},
+		})
 	})
 }
 

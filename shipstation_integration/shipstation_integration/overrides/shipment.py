@@ -20,14 +20,17 @@ from typing import Any
 import frappe
 from erpnext.stock.doctype.shipment.shipment import Shipment
 from frappe import _
-from frappe.utils import get_time
+from frappe.utils import cint, get_time
 from inventory_tools.inventory_tools.overrides.pack_stock_reservation import (
 	cancel_stock_reservation_entries_from_pack,
 	maybe_reserve_stock_on_pack_submit,
 )
 from inventory_tools.inventory_tools.overrides.shipment import InventoryToolsShipment
 
-from shipstation_integration.base_ltl import require_submitted_shipment_for_ltl
+from shipstation_integration.base_ltl import (
+	persist_shipment_ltl_fields,
+	require_submitted_shipment_for_ltl,
+)
 from shipstation_integration.ltl import get_ltl_provider
 from shipstation_integration.shipstation_integration.overrides.handling_unit import (
 	on_shipment_submit,
@@ -525,3 +528,107 @@ def schedule_ltl_pickup(doc: Shipment | str, settings_name: str | None = None) -
 	message = ltl_class.schedule_ltl_pickup(doc, ltl_settings_name(settings_name))
 	# TODO: if successful, save shipping amount to DN and submit?
 	return message
+
+
+@frappe.whitelist()
+def accept_ltl_quotation(shipment: str, quotation: str, book: int | str = 0) -> dict:
+	"""Accept one of the offers saved on a submitted LTL Shipment, and book the pickup
+	with the carrier when asked.
+
+	Accepting is submitting the Shipment Quotation: that stamps the offer and its cost on
+	the Shipment and makes the pickup bookable. Whoever may submit the Shipment may accept
+	its offer from the form; the quotation's own submit permission still governs anything
+	done from the quotation itself.
+	"""
+	doc = frappe.get_doc("Shipment", shipment)
+	if not frappe.has_permission("Shipment", "submit", doc):
+		frappe.throw(_("You cannot accept offers on this Shipment."), frappe.PermissionError)
+	require_submitted_shipment_for_ltl(doc)
+	if doc.quote_or_offer_id or doc.accepted_quotation:
+		frappe.throw(_("{0} already has an accepted offer; cancel it first.").format(doc.name))
+
+	sq = frappe.get_doc("Shipment Quotation", quotation)
+	if sq.shipment != doc.name:
+		frappe.throw(_("{0} is not an offer on {1}.").format(quotation, doc.name))
+	if sq.docstatus == 2:
+		frappe.throw(_("{0} was cancelled. Get fresh quotes.").format(quotation))
+	if sq.docstatus == 0:
+		sq.flags.ignore_permissions = True
+		sq.submit()
+
+	result = {
+		"quotation": sq.name,
+		"carrier": sq.carrier,
+		"amount": sq.grand_total,
+		"booked": False,
+	}
+	if cint(book):
+		doc = frappe.get_doc("Shipment", shipment)
+		result["message"] = get_ltl_provider(doc).schedule_ltl_pickup(doc, ltl_settings_name(None))
+		result["booked"] = True
+		result.update(
+			frappe.db.get_value(
+				"Shipment",
+				shipment,
+				["awb_number", "pickup_id", "shipment_id", "status"],
+				as_dict=True,
+			)
+		)
+	return result
+
+
+@frappe.whitelist()
+def cancel_ltl_booking(shipment: str) -> dict:
+	"""Take back the accepted offer on a Shipment.
+
+	Tells the carrier when a load was booked, cancels the quotation (which clears the
+	offer, the cost and any freight entry it made) and puts the Shipment back to Submitted
+	so it can be quoted again. The Shipment itself stays as it was packed.
+	"""
+	doc = frappe.get_doc("Shipment", shipment)
+	if not frappe.has_permission("Shipment", "submit", doc):
+		frappe.throw(_("You cannot cancel the booking on this Shipment."), frappe.PermissionError)
+
+	accepted = doc.accepted_quotation or frappe.db.get_value(
+		"Shipment Quotation", {"shipment": doc.name, "docstatus": 1}, "name"
+	)
+	if not accepted and not doc.shipment_id:
+		frappe.throw(_("Nothing is accepted or booked on {0}.").format(doc.name))
+
+	confirmation = None
+	carrier_told = False
+	if doc.shipment_id:
+		try:
+			confirmation = get_ltl_provider(doc).cancel_shipment(doc, ltl_settings_name(None))
+			carrier_told = True
+		except NotImplementedError:
+			# ShipEngine has no cancel call for a scheduled LTL pickup: the booking is
+			# released here and the carrier is told by phone.
+			frappe.msgprint(
+				_("{0} cannot be told from here. Call them to cancel pickup {1}.").format(
+					doc.carrier or doc.preferred_carrier, doc.pickup_id or doc.shipment_id
+				),
+				alert=True,
+				indicator="orange",
+			)
+
+	# The Shipment points at the quotation, and a submitted document cannot be cancelled
+	# while another one links to it, so drop the link before cancelling.
+	persist_shipment_ltl_fields(
+		doc.doctype,
+		doc.name,
+		{
+			"accepted_quotation": None,
+			"awb_number": None,
+			"pickup_id": None,
+			"shipment_id": None,
+			"carrier": None,
+			"carrier_service": None,
+			"status": "Submitted",
+		},
+	)
+	if accepted:
+		sq = frappe.get_doc("Shipment Quotation", accepted)
+		sq.flags.ignore_permissions = True
+		sq.cancel()
+	return {"confirmation": confirmation, "carrier_told": carrier_told, "quotation": accepted}

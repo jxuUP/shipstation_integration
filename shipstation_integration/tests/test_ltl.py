@@ -416,6 +416,60 @@ def test_shipstation_schedule_ltl_pickup_via_api(monkeypatch):
 	assert pickup_fixture["pro_number"] in msg
 
 
+@pytest.mark.order(53)
+def test_accept_offer_from_the_shipment_and_take_it_back(monkeypatch):
+	"""Accept Offer on the form submits the saved quotation and, asked to, books the pickup
+	in the same call; Cancel Booking undoes both and leaves the Shipment quotable again."""
+	from shipstation_integration.shipstation_integration.overrides.shipment import (
+		accept_ltl_quotation,
+		cancel_ltl_booking,
+	)
+
+	reset_ltl_shipment_quotation_test_state()
+	shipment = get_draft_ltl_shipment_for_tests()
+	assert shipment.docstatus == 1
+	ShipstationLTL().save_ltl_quotes_as_shipment_quotations_and_display(
+		shipment, ltl_quotes_response_for_tests()[:1]
+	)
+	sq = frappe.get_last_doc("Shipment Quotation", filters={"shipment": shipment.name})
+	assert sq.docstatus == 0
+
+	pickup_fixture = ltl_pickup_response_for_tests()
+	carrier_response = MockHttpxResponse(
+		json_data={
+			"carrier_id": "aa5d80c5-31db-40d2-b046-3450880e8b2e",
+			"scac": "TEST",
+			"features": ["scheduled_pickup"],
+			"packages": [],
+		}
+	)
+	monkeypatch.setattr(
+		"httpx.Client",
+		lambda: MockHttpxClient([carrier_response, MockHttpxResponse(json_data=pickup_fixture)]),
+	)
+
+	result = accept_ltl_quotation(shipment.name, sq.name, book=1)
+	assert result["booked"] is True
+	assert result["awb_number"] == pickup_fixture["pro_number"]
+	assert frappe.db.get_value("Shipment Quotation", sq.name, "docstatus") == 1
+	shipment.reload()
+	assert shipment.accepted_quotation == sq.name
+	assert flt(shipment.shipment_amount) == flt(sq.grand_total)
+	assert shipment.status == "Booked"
+
+	# ShipEngine has no LTL cancel call, so the booking is released here and the
+	# carrier is phoned; a broker such as Banyan is told through its API.
+	taken_back = cancel_ltl_booking(shipment.name)
+	assert taken_back["carrier_told"] is False
+	shipment.reload()
+	assert frappe.db.get_value("Shipment Quotation", sq.name, "docstatus") == 2
+	assert not shipment.accepted_quotation
+	assert not shipment.awb_number
+	assert not shipment.pickup_id
+	assert flt(shipment.shipment_amount) == 0
+	assert shipment.status == "Submitted"
+
+
 @pytest.mark.order(51)
 def test_sdn_dimensions_to_inches_centimeter():
 	length, width, height = sdn_dimensions_to_inches(101.6, 121.9, 152.4, "Centimeter")
