@@ -240,23 +240,7 @@ async function show_quote_and_spot_quote_fields(frm) {
 					frm.doc.freight_type === 'LTL' &&
 					!frm.doc.quote_or_offer_id
 				) {
-					frm.add_custom_button(__('Get LTL Quotes'), () => {
-						const progress = start_ltl_quote_progress()
-						frappe.call({
-							method: 'shipstation_integration.shipstation_integration.overrides.shipment.fetch_ltl_quotes',
-							args: { doc: frm.doc, settings_name: null },
-							callback: function (r) {
-								progress.finish()
-								const quotes = r && r.message
-								if (!quotes || !quotes.length) {
-									frappe.msgprint(__('No LTL quotes returned for this shipment.'))
-									return
-								}
-								show_ltl_quote_selection_dialog(frm, quotes)
-							},
-							error: () => progress.abandon(),
-						})
-					})
+					frm.add_custom_button(__('Get LTL Quotes'), () => request_ltl_quotes(frm))
 				} else {
 					frm.remove_custom_button('Get LTL Quotes')
 				}
@@ -264,47 +248,86 @@ async function show_quote_and_spot_quote_fields(frm) {
 		})
 }
 
-// Carriers take the better part of a minute to return LTL rates, and the load balancer in front
-// of the site closes the connection at 60 seconds. A plain freeze overlay reports neither, so a
-// slow answer and a dead request look exactly alike from the form. Track the expected duration
-// instead, hold short of full while the request is still open, and let only a real response
-// finish the bar.
-const LTL_QUOTE_EXPECTED_SECONDS = 45
-const LTL_QUOTE_GATEWAY_LIMIT_SECONDS = 60
+// Banyan rates in the background: the load is created in a second and a dozen carriers answer
+// over the next half minute. Holding one request open for all of them meant a slow answer and
+// a dead request looked the same from the form (the load balancer closes a connection at 60
+// seconds), so start the request, then poll the load and count the offers in as they arrive.
+// Carriers that answer in one round trip come back complete from the first call.
+const LTL_QUOTE_METHODS = 'shipstation_integration.shipstation_integration.overrides.shipment'
+const LTL_QUOTE_POLL_MS = 2500
+const LTL_QUOTE_EXPECTED_SECONDS = 30
+const LTL_QUOTE_GIVE_UP_SECONDS = 120
 
-function ltl_quote_progress_percent(elapsed_seconds) {
-	if (elapsed_seconds <= LTL_QUOTE_EXPECTED_SECONDS) {
-		return (elapsed_seconds / LTL_QUOTE_EXPECTED_SECONDS) * 90
-	}
-	// Overrunning the estimate is normal, so keep creeping rather than stalling at 90, but never
-	// promise a completion we have not actually seen.
-	const overrun = (elapsed_seconds - LTL_QUOTE_EXPECTED_SECONDS) / LTL_QUOTE_EXPECTED_SECONDS
-	return Math.min(97, 90 + overrun * 7)
-}
+function request_ltl_quotes(frm) {
+	const progress = start_ltl_quote_progress()
+	const args = { doc: frm.doc, settings_name: null }
 
-function ltl_quote_progress_description(elapsed_seconds) {
-	const seconds = Math.round(elapsed_seconds)
-	if (elapsed_seconds >= LTL_QUOTE_GATEWAY_LIMIT_SECONDS) {
-		return __('Still waiting at {0}s, past the {1}s gateway limit. This request may not return.', [
-			seconds,
-			LTL_QUOTE_GATEWAY_LIMIT_SECONDS,
-		])
+	const settle = offers => {
+		progress.finish(offers.length)
+		if (offers.length) {
+			show_ltl_quote_selection_dialog(frm, offers)
+		} else if (progress.elapsed() >= LTL_QUOTE_GIVE_UP_SECONDS) {
+			frappe.msgprint({
+				title: __('LTL quote request timed out'),
+				indicator: 'orange',
+				message: __(
+					'The carriers did not answer within {0} seconds. Nothing was saved, so this is safe to run again.',
+					[LTL_QUOTE_GIVE_UP_SECONDS]
+				),
+			})
+		} else {
+			frappe.msgprint(__('No LTL quotes returned for this shipment.'))
+		}
 	}
-	if (elapsed_seconds >= LTL_QUOTE_EXPECTED_SECONDS) {
-		return __('Still waiting on carriers ({0}s)', [seconds])
+
+	const next = result => {
+		const offers = (result && result.offers) || []
+		// What has arrived by the deadline is real and can be saved, so offer it rather than
+		// throw the wait away.
+		if (!result || result.done || progress.elapsed() >= LTL_QUOTE_GIVE_UP_SECONDS) {
+			settle(offers)
+			return
+		}
+		progress.update(offers)
+		setTimeout(() => {
+			frappe
+				.xcall(`${LTL_QUOTE_METHODS}.poll_ltl_quotes`, { ...args, handle: result.handle })
+				.then(next, progress.abandon)
+		}, LTL_QUOTE_POLL_MS)
 	}
-	return __('Contacting carriers ({0}s)', [seconds])
+
+	frappe.xcall(`${LTL_QUOTE_METHODS}.begin_ltl_quotes`, args).then(next, progress.abandon)
 }
 
 function start_ltl_quote_progress() {
 	const title = __('Getting LTL Quotes')
 	const started = Date.now()
+	let offers = []
 	let closed = false
 
-	const render = () => {
-		const elapsed = (Date.now() - started) / 1000
-		frappe.show_progress(title, ltl_quote_progress_percent(elapsed), 100, ltl_quote_progress_description(elapsed))
+	const elapsed = () => (Date.now() - started) / 1000
+	const seconds = () => Math.round(elapsed())
+
+	// Banyan does not say how many carriers it asked, so the bar follows the clock and the
+	// text follows the carriers. The bar holds short of full until the last answer is in.
+	const percent = () => Math.min(90, (elapsed() / LTL_QUOTE_EXPECTED_SECONDS) * 90)
+
+	const description = () => {
+		if (!offers.length) {
+			return elapsed() < LTL_QUOTE_EXPECTED_SECONDS
+				? __('Asking the carriers ({0}s)', [seconds()])
+				: __('Still waiting on the carriers ({0}s)', [seconds()])
+		}
+		const cheapest = offers.reduce((a, b) => (parseFloat(b.total_price) < parseFloat(a.total_price) ? b : a))
+		return __('{0} offer(s) so far, cheapest {1} at {2} ({3}s)', [
+			offers.length,
+			cheapest.carrier_name,
+			format_currency(cheapest.total_price, cheapest.currency || 'USD'),
+			seconds(),
+		])
 	}
+
+	const render = () => frappe.show_progress(title, percent(), 100, description())
 
 	// Same title on every call, so frappe reuses the one dialog instead of stacking them.
 	render()
@@ -318,27 +341,19 @@ function start_ltl_quote_progress() {
 	}
 
 	return {
-		finish: () => {
+		elapsed,
+		update: latest => {
+			offers = latest
+			render()
+		},
+		finish: count => {
 			if (!stop()) return
-			frappe.show_progress(title, 100, 100, __('Done'))
+			frappe.show_progress(title, 100, 100, __('{0} offer(s) in {1}s', [count, seconds()]))
 			setTimeout(() => frappe.hide_progress(), 500)
 		},
+		// The server's own message says what went wrong; just take the bar down.
 		abandon: () => {
-			const elapsed = (Date.now() - started) / 1000
-			if (!stop()) return
-			frappe.hide_progress()
-			// A gateway timeout closes the connection without a response, so nothing else is
-			// going to say anything. Quicker failures carry a server message that speaks for itself.
-			if (elapsed >= LTL_QUOTE_GATEWAY_LIMIT_SECONDS) {
-				frappe.msgprint({
-					title: __('LTL quote request timed out'),
-					indicator: 'orange',
-					message: __(
-						'The carriers did not answer within {0} seconds and the connection was closed. Nothing was saved, so this is safe to run again.',
-						[LTL_QUOTE_GATEWAY_LIMIT_SECONDS]
-					),
-				})
-			}
+			if (stop()) frappe.hide_progress()
 		},
 	}
 }

@@ -199,6 +199,52 @@ GET_SHIPMENT_BOOKED_RESPONSE = MockResponse(
 	}
 )
 
+# POST /shipments without waitForRates: the load comes back at once, unrated.
+SHIPMENT_STARTED_RESPONSE = MockResponse(
+	json_data={
+		"message": "Shipment imported to pending and rating process initiated.",
+		"shipment": {"loadId": 94375262, "status": "Pending", "ratingCompleted": False, "quotes": []},
+	}
+)
+
+# GET /shipments/{loadId} while the carriers are still answering, then once the last one has.
+SHIPMENT_RATING_RESPONSE = MockResponse(
+	json_data={
+		"loadId": 94375262,
+		"status": "Quoted",
+		"ratingCompleted": False,
+		"quotes": [
+			{
+				"quoteId": 698026457,
+				"carrierName": "ABF Freight System Inc",
+				"scac": "ABFS",
+				"serviceDescription": "Standard",
+				"transitDays": 3,
+				"rawPrice": {"netPrice": 743.87},
+			}
+		],
+	}
+)
+
+SHIPMENT_RATED_RESPONSE = MockResponse(
+	json_data={
+		"loadId": 94375262,
+		"status": "Quoted",
+		"ratingCompleted": True,
+		"quotes": SHIPMENT_RATING_RESPONSE.json()["quotes"]
+		+ [
+			{
+				"quoteId": 698026458,
+				"carrierName": "Saia LTL",
+				"scac": "SAIA",
+				"serviceDescription": "Standard",
+				"transitDays": 2,
+				"rawPrice": {"netPrice": 1884.34},
+			}
+		],
+	}
+)
+
 DOCUMENTS_RESPONSE = MockResponse(
 	json_data=[{"documentType": "BOL", "content": "JVBERi0=", "fileName": "bol_banyan.pdf"}]
 )
@@ -465,6 +511,35 @@ def test_get_ltl_quotes_requires_submitted_shipment():
 		assert "submit" in str(exc_info.value).lower()
 	finally:
 		frappe.delete_doc("Shipment", draft.name, force=True)
+
+
+@pytest.mark.order(63)
+def test_banyan_begin_and_poll_offers(monkeypatch):
+	"""The form starts the load without waiting and polls it until Banyan says rating is done."""
+	settings_name = get_banyan_settings_name()
+	assert settings_name, "Missing Banyan Freight Carrier Settings"
+
+	shipment = get_draft_ltl_shipment_for_tests()
+	shared_client = MockHttpxClient(
+		[SHIPMENT_STARTED_RESPONSE, SHIPMENT_RATING_RESPONSE, SHIPMENT_RATED_RESPONSE]
+	)
+	monkeypatch.setattr("httpx.Client", lambda: shared_client)
+
+	started = BanyanLTL().begin_ltl_offers(shipment, settings_name=settings_name)
+	assert started["done"] is False
+	assert started["handle"] == "94375262"
+	assert started["offers"] == []
+
+	partial = BanyanLTL().poll_ltl_offers(shipment, started["handle"], settings_name=settings_name)
+	assert partial["done"] is False
+	assert [o["carrier_scac"] for o in partial["offers"]] == ["ABFS"]
+	assert partial["offers"][0]["total_price"] == 743.87
+	assert partial["offers"][0]["transaction_id"] == "94375262"
+
+	complete = BanyanLTL().poll_ltl_offers(shipment, started["handle"], settings_name=settings_name)
+	assert complete["done"] is True
+	assert [o["carrier_scac"] for o in complete["offers"]] == ["ABFS", "SAIA"]
+	assert [o["offer_id"] for o in complete["offers"]] == ["698026457", "698026458"]
 
 
 @pytest.mark.order(63)

@@ -234,6 +234,21 @@ class BaseLTL:
 		"""Return available LTL offers as normalized dicts without persisting. Override for quote-shop UIs."""
 		raise NotImplementedError
 
+	def begin_ltl_offers(self, doc: Shipment, settings_name: str | None = None) -> dict:
+		"""Start a rate request and return what is known so far.
+
+		Most carriers answer in one round trip, so the default is the complete offer list with
+		``done`` set. A provider that rates in the background (Banyan asks a dozen carriers and
+		collects their answers over half a minute) returns ``done`` False and a ``handle`` for
+		``poll_ltl_offers``, so the form can show the offers as they arrive instead of holding
+		one request open until the last carrier speaks.
+		"""
+		return {"offers": self.fetch_ltl_offers(doc, settings_name), "done": True, "handle": None}
+
+	def poll_ltl_offers(self, doc: Shipment, handle: str, settings_name: str | None = None) -> dict:
+		"""The offers gathered so far for a request started by ``begin_ltl_offers``."""
+		return {"offers": [], "done": True, "handle": handle}
+
 	# def supports_scheduled_pickup(
 	# 	self, doc: Shipment, settings_name: str | None = None
 	# ) -> dict:

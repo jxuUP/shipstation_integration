@@ -377,6 +377,31 @@ def fetch_ltl_quotes(doc: Shipment | str, settings_name: str | None = None) -> l
 
 
 @frappe.whitelist()
+def begin_ltl_quotes(doc: Shipment | str, settings_name: str | None = None) -> dict:
+	"""Start the rate request behind the Get LTL Quotes button.
+
+	Returns ``{"offers": [...], "done": bool, "handle": ...}``. Carriers that answer in one
+	round trip come back complete; Banyan comes back at once with ``done`` False and the load
+	to poll with ``poll_ltl_quotes``, so the form can count the carriers in as they answer.
+	"""
+	if not doc:
+		frappe.throw(_("Missing Shipment data: pass ``doc`` as a JSON string in the POST body."))
+	doc = frappe.get_doc(json.loads(doc)) if isinstance(doc, str) else doc
+	ltl_class = get_ltl_provider(doc)
+	return ltl_class.begin_ltl_offers(doc, ltl_settings_name(settings_name))
+
+
+@frappe.whitelist()
+def poll_ltl_quotes(doc: Shipment | str, handle: str, settings_name: str | None = None) -> dict:
+	"""The offers gathered so far for a request started by ``begin_ltl_quotes``."""
+	if not doc:
+		frappe.throw(_("Missing Shipment data: pass ``doc`` as a JSON string in the POST body."))
+	doc = frappe.get_doc(json.loads(doc)) if isinstance(doc, str) else doc
+	ltl_class = get_ltl_provider(doc)
+	return ltl_class.poll_ltl_offers(doc, handle, ltl_settings_name(settings_name))
+
+
+@frappe.whitelist()
 def save_selected_ltl_quotes(shipment_name: str, selected_quotes: list | str) -> str:
 	"""Save only the quotes the user selected from the dialog as Shipment Quotation docs.
 

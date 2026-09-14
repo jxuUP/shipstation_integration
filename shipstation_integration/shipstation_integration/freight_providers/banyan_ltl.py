@@ -9,6 +9,9 @@ Workflow
    POST /shipments with ``ImportAsStatus: Quoted`` and ``waitForRates: true`` so rates
    are included in the response (Pending returns before quotes are ready).
    Saves one Shipment Quotation per quote returned.
+   The form goes through ``begin_ltl_offers`` / ``poll_ltl_offers`` instead: the same POST
+   with ``waitForRates: false`` returns the load at once, and GET /shipments/{loadId}
+   fills ``quotes`` carrier by carrier until ``ratingCompleted`` is true.
    ``quote_or_offer_id``             = Banyan ``quoteId`` (integer)
    ``quote_or_offer_transaction_id`` = Banyan ``loadId``
 
@@ -439,7 +442,13 @@ class BanyanLTL(BaseLTL):
 
 	@staticmethod
 	def parse_create_shipment_response(data: Any) -> tuple[str, list[dict]]:
-		"""loadId and quotes from POST /shipments JSON (camelCase or PascalCase keys)."""
+		"""loadId and quotes from POST /shipments JSON (camelCase or PascalCase keys).
+
+		Rated in one call the response is the load itself; started without waiting it is
+		``{"message": ..., "shipment": load}``, and GET /shipments/{loadId} is the load again.
+		"""
+		if isinstance(data, dict) and isinstance(data.get("shipment"), dict):
+			data = data["shipment"]
 		if not isinstance(data, dict):
 			return "", []
 		lid = data.get("loadId")
@@ -702,10 +711,16 @@ class BanyanLTL(BaseLTL):
 				},
 			)
 
-	def fetch_banyan_offers(self, doc: Shipment, fc) -> tuple[str, list[dict]]:
-		"""Call the Banyan API and return (load_id, raw_quotes) without saving."""
+	def fetch_banyan_offers(self, doc: Shipment, fc, wait: bool = True) -> tuple[str, list[dict]]:
+		"""Call the Banyan API and return (load_id, raw_quotes) without saving.
+
+		With ``wait`` Banyan holds the request until every carrier has rated, half a minute or
+		more. Without it the load comes back in about a second with an empty quote list and
+		``ratingCompleted`` False; ``fetch_banyan_shipment`` then reads the answers as they land.
+		"""
 		use_ez = bool(getattr(fc, "use_ez_rate", False))
 		payload = self.build_ez_rate_payload(doc, fc) if use_ez else self.build_shipment_payload(doc, fc)
+		payload["waitForRates"] = wait
 
 		with httpx.Client() as client:
 			resp = client.post(
@@ -722,6 +737,34 @@ class BanyanLTL(BaseLTL):
 		"""Return Banyan quotes as normalized dicts without saving anything."""
 		fc = self.get_fcs(doc, settings_name)
 		load_id, quotes = self.fetch_banyan_offers(doc, fc)
+		return self.offers_from_banyan_quotes(quotes, load_id)
+
+	def begin_ltl_offers(self, doc: Shipment, settings_name: str | None = None) -> dict:
+		"""Create the load without waiting for rates; the loadId is the handle to poll."""
+		fc = self.get_fcs(doc, settings_name)
+		load_id, quotes = self.fetch_banyan_offers(doc, fc, wait=False)
+		if not load_id:
+			frappe.throw(_("Banyan accepted the shipment but returned no load to rate."))
+		return {
+			"offers": self.offers_from_banyan_quotes(quotes, load_id),
+			"done": False,
+			"handle": load_id,
+		}
+
+	def poll_ltl_offers(self, doc: Shipment, handle: str, settings_name: str | None = None) -> dict:
+		"""The carrier answers Banyan has collected so far; ``done`` once the last one is in."""
+		fc = self.get_fcs(doc, settings_name)
+		data = self.fetch_banyan_shipment(fc, handle)
+		_, quotes = self.parse_create_shipment_response(data)
+		return {
+			"offers": self.offers_from_banyan_quotes(quotes, handle),
+			"done": bool(data.get("ratingCompleted")),
+			"handle": handle,
+		}
+
+	def offers_from_banyan_quotes(self, quotes: list, load_id: str) -> list[dict]:
+		"""Banyan QuoteDtos as the normalized offer dicts the selection dialog and
+		``save_selected_ltl_quotes`` read."""
 		results: list[dict[str, Any]] = []
 		for q in quotes:
 			if not isinstance(q, dict):

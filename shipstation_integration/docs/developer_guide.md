@@ -30,6 +30,7 @@ Entries are matched in definition order; first match wins. Place custom entries 
 Implement required methods on a class extending `shipstation_integration.base_ltl.BaseLTL`:
 
 - `get_ltl_quotes`
+- `fetch_ltl_offers` (the offers without saving, for the selection dialog); override `begin_ltl_offers` / `poll_ltl_offers` too when the carrier rates in the background
 - `schedule_ltl_pickup`
 - `track_shipment`
 - `get_documents`
