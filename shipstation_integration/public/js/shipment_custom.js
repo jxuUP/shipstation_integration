@@ -359,7 +359,9 @@ function start_ltl_quote_progress() {
 	}
 }
 
-function show_ltl_quote_selection_dialog(frm, quotes) {
+function show_ltl_quote_selection_dialog(frm, offers) {
+	// Cheapest first: the broker answers in the order the carriers did.
+	const quotes = [...offers].sort((a, b) => parseFloat(a.total_price || 0) - parseFloat(b.total_price || 0))
 	const fmt_currency = (val, currency) => `${currency || 'USD'} ${parseFloat(val || 0).toFixed(2)}`
 	const fmt_days = d => (d != null ? `${d} day${d !== 1 ? 's' : ''}` : '—')
 
@@ -453,7 +455,15 @@ function add_ltl_offer_actions(frm) {
 
 	const booked = !!(frm.doc.pickup_id || frm.doc.awb_number || frm.doc.shipment_id)
 	if (frm.doc.quote_or_offer_id || frm.doc.accepted_quotation || booked) {
-		show_ltl_booking(frm, booked)
+		// The Shipment's carrier field names the broker; the offer names who is coming.
+		const offer = frm.doc.accepted_quotation
+			? frappe.db.get_value('Shipment Quotation', frm.doc.accepted_quotation, [
+					'carrier',
+					'carrier_scac',
+					'service_level',
+				])
+			: Promise.resolve({})
+		offer.then(r => show_ltl_booking(frm, booked, (r && r.message) || {}))
 		frm.add_custom_button(booked ? __('Cancel Booking') : __('Cancel Offer'), () => cancel_ltl_booking(frm, booked))
 		return
 	}
@@ -545,7 +555,7 @@ function accept_ltl_offer_dialog(frm, offers) {
 	d.show()
 }
 
-function show_ltl_booking(frm, booked) {
+function show_ltl_booking(frm, booked, offer) {
 	const esc = frappe.utils.escape_html
 	const cells = []
 	const add = (label, value) => {
@@ -554,8 +564,14 @@ function show_ltl_booking(frm, booked) {
 				`<div class="col-sm-3" style="margin-bottom:6px"><div class="text-muted small">${label}</div><div>${value}</div></div>`
 			)
 	}
-	add(__('Carrier'), esc(frm.doc.carrier || frm.doc.preferred_carrier || ''))
-	add(__('Service'), esc(frm.doc.carrier_service || ''))
+	const carrier = offer.carrier || frm.doc.carrier || frm.doc.preferred_carrier || ''
+	const broker = offer.carrier && frm.doc.preferred_carrier !== offer.carrier ? frm.doc.preferred_carrier : ''
+	add(
+		__('Carrier'),
+		esc(carrier) + (offer.carrier_scac ? ` <small class="text-muted">(${esc(offer.carrier_scac)})</small>` : '')
+	)
+	add(__('Through'), esc(broker || ''))
+	add(__('Service'), esc(offer.service_level || frm.doc.carrier_service || ''))
 	add(__('PRO'), esc(frm.doc.awb_number || ''))
 	add(__('Pickup number'), esc(frm.doc.pickup_id || ''))
 	add(__('Load'), esc(frm.doc.shipment_id || ''))
@@ -571,7 +587,7 @@ function show_ltl_booking(frm, booked) {
 }
 
 function cancel_ltl_booking(frm, booked) {
-	const carrier = frm.doc.carrier || frm.doc.preferred_carrier || __('the carrier')
+	const carrier = frm.doc.preferred_carrier || frm.doc.carrier || __('the carrier')
 	const question = booked
 		? __('Cancel the pickup with {0}? The PRO is given up and the Shipment can be quoted again.', [carrier])
 		: __('Take back the accepted offer? Its cost comes off the Shipment and it can be quoted again.')
