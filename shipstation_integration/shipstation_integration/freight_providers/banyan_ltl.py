@@ -1064,6 +1064,10 @@ class BanyanLTL(BaseLTL):
 				headers=self.headers(fc),
 				timeout=30,
 			)
+		# No documents yet (the sandbox never has any) is an empty answer, not an error
+		# to show on top of a booking that just went through.
+		if resp.status_code == 404:
+			return []
 		self.raise_for_status(resp, "get_documents GET /documents")
 		data = resp.json()
 		raw_docs = data if isinstance(data, list) else data.get("documents") or []
