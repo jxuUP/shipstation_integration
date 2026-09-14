@@ -400,7 +400,7 @@ function show_ltl_quote_selection_dialog(frm, quotes) {
 				freeze: true,
 				callback(r) {
 					d.hide()
-					if (r && r.message) frappe.msgprint(r.message)
+					if (r && r.message) frappe.show_alert({ message: r.message, indicator: 'green' }, 5)
 					// The offers are saved on their own doctype, so the form has nothing new to load,
 					// but its buttons and banners read the saved quotations and want a refresh.
 					if (frm.is_dirty()) frm.refresh()
