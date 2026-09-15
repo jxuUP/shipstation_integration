@@ -111,9 +111,16 @@ def format_parcel_details(row, user: str | None = None) -> str:
 	if not any([length, width, height, weight]):
 		return ""
 
+	# A user with no unit preference reads the carton in the units it was typed in, not in
+	# metric: an Inch box on an Inch site should not come back as centimetres.
 	user_doc = frappe.get_cached_doc("User", user or frappe.session.user)
-	dim_pref = user_doc.dimension_uom or "Centimeter"
-	wt_pref = normalize_weight_uom_name(user_doc.weight_uom) or user_doc.weight_uom or "Kg"
+	dim_pref = user_doc.dimension_uom or row.get("dimension_uom") or "Centimeter"
+	wt_pref = (
+		normalize_weight_uom_name(user_doc.weight_uom)
+		or user_doc.weight_uom
+		or normalize_weight_uom_name(row.get("parcel_weight_uom"))
+		or "Kg"
+	)
 
 	factors = conversion_factors_storage_to_prefs(
 		row.get("dimension_uom") or "Centimeter",
