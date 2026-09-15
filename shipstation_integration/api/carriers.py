@@ -1031,6 +1031,29 @@ def get_supplier_for_carrier_id(carrier_id: str, settings_name: str | None = Non
 	return None
 
 
+def get_carrier_code_for_id(
+	carrier_id: str | None, settings_name: str | None = None
+) -> str | None:
+	"""The ShipEngine carrier code ("ups", "fedex") behind a carrier id, from the synced cache."""
+	if not carrier_id:
+		return None
+
+	settings = get_shipstation_settings_optional(settings_name)
+	if not settings or not settings.get("shipstation_api_carrier_data"):
+		return None
+
+	try:
+		carriers = json.loads(settings.shipstation_api_carrier_data)
+	except (ValueError, TypeError):
+		return None
+
+	for carrier in carriers or []:
+		if carrier.get("carrier_id") == carrier_id:
+			return carrier.get("carrier_code")
+
+	return None
+
+
 def get_carrier_capabilities(carrier_id: str, settings_name: str | None = None) -> dict:
 	"""What a carrier account can do, read from ShipEngine rather than from the sync.
 

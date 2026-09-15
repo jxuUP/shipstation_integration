@@ -22,6 +22,7 @@ from shipengine.errors import ShipEngineError
 
 from shipstation_integration.api.carriers import (
 	get_carrier_capabilities,
+	get_carrier_code_for_id,
 	get_supplier_for_carrier_id,
 )
 from shipstation_integration.api.rates import (
@@ -63,7 +64,9 @@ def create_label(
 	# ShipEngine prints the reference block from each package, not from the shipment:
 	# a shipment-level label_messages is accepted and ignored, which is why the labels
 	# bought so far went out with the references blank.
-	messages = shipment_data.pop("label_messages", None)
+	messages = fit_label_messages(
+		shipment_data.pop("label_messages", None), shipment_data.get("carrier_id")
+	)
 	if messages:
 		for package in shipment_data.get("packages") or []:
 			package.setdefault("label_messages", messages)
@@ -1201,26 +1204,47 @@ def get_label_messages(ps, dn) -> dict:
 	"""
 	Build carrier label reference fields (35 chars max each).
 
-	Defaults: reference1 = sales channel, reference2 = sales order number,
-	reference3 = customer PO. Each can be overridden on the Packing Slip.
-
-	Target orders lead with the Target order number instead - that is the
-	reference the warehouse and Target's receiving dock both scan against.
+	Defaults: reference1 = customer PO (the Target order number on a Target
+	order), reference2 = sales order number, reference3 = sales channel. That
+	is the order the receiving dock scans them in, and it is also the order
+	they are dropped in for a carrier with fewer slots (see fit_label_messages).
+	Each can be overridden on the Packing Slip.
 	"""
 	so_number = dn.get("up_sales_order_number") or next(
 		(item.against_sales_order for item in (dn.items or []) if item.against_sales_order), ""
 	)
 	channel = dn.get("up_sales_channel") or ""
 	customer_po = dn.get("po_no") or ""
-	target_order_no = customer_po if channel in TARGET_CHANNELS else ""
 
 	references = {
-		"reference1": ps.get("label_reference_1") or target_order_no or channel or so_number,
+		"reference1": ps.get("label_reference_1") or customer_po or channel or so_number,
 		"reference2": ps.get("label_reference_2") or so_number,
-		"reference3": ps.get("label_reference_3") or (channel if target_order_no else customer_po),
+		"reference3": ps.get("label_reference_3") or (channel if customer_po else ""),
 	}
 
 	return {key: str(value)[:35] for key, value in references.items() if value}
+
+
+# UPS prints two references on a label and refuses a request carrying a third
+# ("label_message.reference3 is not supported for UPS"); FedEx and USPS take three.
+LABEL_REFERENCE_SLOTS = {"ups": 2}
+
+
+def fit_label_messages(messages: dict | None, carrier_id: str | None) -> dict:
+	"""Keep the references this carrier will print, dropping the least useful last.
+
+	The order in get_label_messages puts the customer PO and the order number
+	first and the sales channel third, so a two-slot carrier loses the channel,
+	which nobody scans.
+	"""
+	if not messages:
+		return {}
+	slots = LABEL_REFERENCE_SLOTS.get((get_carrier_code_for_id(carrier_id) or "").lower(), 3)
+	return {key: value for key, value in messages.items() if key in _reference_keys(slots)}
+
+
+def _reference_keys(slots: int) -> tuple:
+	return tuple(f"reference{n}" for n in range(1, slots + 1))
 
 
 @frappe.whitelist()
